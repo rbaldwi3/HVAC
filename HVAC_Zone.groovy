@@ -312,7 +312,7 @@ def tempHandler(evt=NULL) {
     }
     atomicState.temperature = new_temp
     if (changed) {
-        update_demand()
+        parent.zone_call_changed()
     }
 }
 
@@ -337,6 +337,9 @@ def heat_setHandler(evt=NULL) {
     if (changed) {
         update_demand()
     }
+    if (new_setpoint - atomicState.temperature > 1) {
+        parent.stage2_heat()
+    }
 }
 
 def cool_setHandler(evt=NULL) {
@@ -359,6 +362,9 @@ def cool_setHandler(evt=NULL) {
     atomicState.cool_setpoint = new_setpoint
     if (changed) {
         update_demand()
+    }
+    if (atomicState.temperature - new_setpoint > 1) {
+        parent.stage2_cool()
     }
 }
 
@@ -411,6 +417,7 @@ def get_cool_setpoint() {
 }
 
 def get_temp() {
+    return atomicState.temperature
 }
 
 def get_on_for_vent() {
