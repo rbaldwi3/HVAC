@@ -12,7 +12,7 @@ definition(
 
 
 preferences {
-    section ("Temperature and Set point - Specify either a thermostat ot a temperatures sensor and offsets from the parent zone setpoints") {
+    section ("Temperature and Set point - Specify either a thermostat or a temperatures sensor and offsets from the parent zone setpoints") {
         input "stat", "capability.thermostat", required: false, title: "Thermostat"
         input "temp_sensor", "capability.temperatureMeasurement", required: false, title: "Temperature Sensor"
         input "heat_offset", "number", required: false, title: "Heating Setpoint Offset from Parent Zone", default: 0, range: "-10 . . 10"
@@ -21,8 +21,13 @@ preferences {
     section ("Zone Data") {
         input "cfm", "number", required: true, title: "Maximum airflow for Zone", range: "200 . . 3000"
         input "closed_pos", "number", required: true, title: "Percent Open when in Off position", default: 0, range: "0 . . 100"
-        input "zone", "capability.switch", required: false, title: "Selection of Zone" // future feature - percentage control as opposed to on/off
+        input "zone", "capability.switch", required: true, title: "Selection of Zone" // future feature - percentage control as opposed to on/off
         input "normally_open", "bool", required: true, title: "Normally Open (i.e. Switch On = Zone Inactive, Switch Off = Zone Selected)", default: false
+        // time interval for polling in case any signals missed
+        input(name:"output_refresh_interval", type:"enum", required: true, title: "Output refresh", options: ["None","Every 5 minutes","Every 10 minutes",
+                                                                                                             "Every 15 minutes","Every 30 minutes"]) 
+        input(name:"input_refresh_interval", type:"enum", required: true, title: "Input refresh", options: ["None","Every 5 minutes","Every 10 minutes",
+                                                                                                             "Every 15 minutes","Every 30 minutes"]) 
     }
     section ("Control Rules") {
         input (name:"heat_join", type: "enum", required: true, title: "Select during parent zone heating call", options: ["Only during subzone heating call",
@@ -91,10 +96,98 @@ def initialize() {
                 atomicState.fan_switch = false
                 break;
         }
+	    subscribe(fan_switch, "switch", fan_switchHandler)
     } else {
         atomicState.fan_switch = false
     }
+    switch ("$output_refresh_interval") {
+        case "None":
+            break
+        case "Every 5 minutes":
+            runEvery5Minutes(refresh_outputs)
+            break
+        case "Every 10 minutes":
+            runEvery10Minutes(refresh_outputs)
+            break
+        case "Every 15 minutes":
+            runEvery15Minutes(refresh_outputs)
+            break
+        case "Every 30 minutes":
+            runEvery30Minutes(refresh_outputs)
+            break
+    }
+    switch ("$input_refresh_interval") {
+        case "None":
+            break
+        case "Every 5 minutes":
+            runEvery5Minutes(refresh_inputs)
+            break
+        case "Every 10 minutes":
+            runEvery10Minutes(refresh_inputs)
+            break
+        case "Every 15 minutes":
+            runEvery15Minutes(refresh_inputs)
+            break
+        case "Every 30 minutes":
+            runEvery30Minutes(refresh_inputs)
+            break
+    }
     parent.child_updated()
+}
+
+def refresh_outputs() {
+    log.debug("In refresh_outputs()")
+}
+
+def refresh_inputs() {
+    log.debug("In refresh_inputs()")
+    if (!stat) {
+        return
+    }
+    if (stat.hasCapability("refresh")) {
+        stat.refresh()
+    }
+    def value = stat.currentValue("thermostatOperatingState")
+    switch ("$value") {
+        case "heating":
+            if (atomicState.heat_demand == 0) {
+                stateHandler()
+            }
+            break
+        case "cooling":
+            if (atomicState.cool_demand == 0) {
+                stateHandler()
+            }
+            break
+        case "fan only":
+            if (atomicState.fan_demand == 0) {
+                stateHandler()
+            }
+            break
+        case "idle":
+            if ((atomicState.heat_demand > 0) || (atomicState.cool_demand > 0)) {
+                stateHandler()
+            }
+            state = stat.currentValue("thermostatFanMode")
+            switch ("$state.value") {
+                case "on":
+                case " on":
+                if (atomicState.fan_demand == 0) {
+                    stateHandler()
+                }
+            }
+            break
+    }
+    def levelstate = stat.currentState("heatingSetpoint")
+    new_setpoint = levelstate.value as BigDecimal
+    if (new_setpoint != atomicState.heat_setpoint) {
+        heat_setHandler()
+    }
+    levelstate = stat.currentState("coolingSetpoint")
+    new_setpoint = levelstate.value as BigDecimal
+    if (new_setpoint != atomicState.cool_setpoint) {
+        cool_setHandler()
+    }
 }
 
 def get_heat_demand(parent_mode, parent_setpoint, parent_temp ) {
@@ -219,6 +312,16 @@ def get_cool_demand(parent_mode, parent_setpoint, parent_temp ) {
     return 0;
 }
 
+def get_vent_demand() {
+    log.debug("In SubZone get_vent_demand()")
+    if (atomicState.fan_switch) {
+        return atomicState.on_capacity
+    } else {
+        return 0;
+    }
+    parent.update_demand()
+}
+
 def idleHandler(evt) {
     log.debug("In SubZone idleHandler()")
     parent.update_demand()
@@ -302,6 +405,19 @@ def parent_heat_setpoint_updated(parent_setpoint) {
         new_setpoint = parent_setpoint as BigDecimal
         new_setpoint += settings.heat_offset
         heat_setpoint_updated(new_setpoint)
+    }
+}
+
+def fan_switchHandler(evt) {
+    log.debug("In SubZone fan_switchHandler()")
+    def currentvalue = fan_switch.currentValue("switch")
+    switch ("$currentvalue") {
+        case "on":
+            atomicState.fan_switch = true
+            break;
+        case "off":
+            atomicState.fan_switch = true
+            break;
     }
 }
 
