@@ -20,6 +20,11 @@ preferences {
         input "zone", "capability.switch", required: true, title: "Switch for selection of Zone" // future feature - percentage control as opposed to on/off
         input "normally_open", "bool", required: true, title: "Normally Open (i.e. Switch On = Zone Inactive, Switch Off = Zone Selected)", default: true
         input "on_for_vent", "capability.switch", required: false, title: "Select during Ventilation Only - yes if no switch specified or switch is on"
+        // time interval for polling in case any signals missed
+        input(name:"output_refresh_interval", type:"enum", required: true, title: "Output refresh", options: ["None","Every 5 minutes","Every 10 minutes",
+                                                                                                             "Every 15 minutes","Every 30 minutes"]) 
+        input(name:"input_refresh_interval", type:"enum", required: true, title: "Input refresh", options: ["None","Every 5 minutes","Every 10 minutes",
+                                                                                                             "Every 15 minutes","Every 30 minutes"]) 
     }
     section {
         app(name: "subzone", appName: "HVAC SubZone", namespace: "rbaldwi3", title: "Create New Sub-Zone", multiple: true, submitOnChange: true)
@@ -41,8 +46,8 @@ def initialize() {
     atomicState.cool_demand = 0
     atomicState.heat_demand = 0
     atomicState.fan_demand = 0
+    atomicState.vent_demand = 0
     atomicState.on_for_vent = true
-    // Sanity check the settings
     // Subscribe to state changes
     subscribe(stat, "thermostatOperatingState", stateHandler)
     subscribe(stat, "thermostatFanMode", stateHandler)
@@ -69,6 +74,7 @@ def initialize() {
         switch ("$value") {
             case "on":
                 atomicState.on_for_vent = true
+                atomicState.vent_demand = atomicState.on_capacity
                 break;
             case "off":
                 atomicState.on_for_vent = false
@@ -88,6 +94,100 @@ def initialize() {
             atomicState.fan_demand = atomicState.on_capacity
             break
     }
+    switch ("$output_refresh_interval") {
+        case "None":
+            break
+        case "Every 5 minutes":
+            runEvery5Minutes(refresh_outputs)
+            break
+        case "Every 10 minutes":
+            runEvery10Minutes(refresh_outputs)
+            break
+        case "Every 15 minutes":
+            runEvery15Minutes(refresh_outputs)
+            break
+        case "Every 30 minutes":
+            runEvery30Minutes(refresh_outputs)
+            break
+    }
+    switch ("$input_refresh_interval") {
+        case "None":
+            break
+        case "Every 5 minutes":
+            runEvery5Minutes(refresh_inputs)
+            break
+        case "Every 10 minutes":
+            runEvery10Minutes(refresh_inputs)
+            break
+        case "Every 15 minutes":
+            runEvery15Minutes(refresh_inputs)
+            break
+        case "Every 30 minutes":
+            runEvery30Minutes(refresh_inputs)
+            break
+    }
+}
+
+def refresh_outputs() {
+    log.debug("In refresh_outputs()")
+    switch ("$atomicState.current_mode") {
+        case "unselected":
+            turn_off()
+            break
+        case "idle":
+            turn_idle()
+            break
+        default:
+            turn_on("$atomicState.current_mode")
+    }
+}
+
+def refresh_inputs() {
+    log.debug("In refresh_inputs()")
+    if (stat.hasCapability("refresh")) {
+        stat.refresh()
+    }
+    def value = stat.currentValue("thermostatOperatingState")
+    switch ("$value") {
+        case "heating":
+            if (atomicState.heat_demand == 0) {
+                stateHandler()
+            }
+            break
+        case "cooling":
+            if (atomicState.cool_demand == 0) {
+                stateHandler()
+            }
+            break
+        case "fan only":
+            if (atomicState.fan_demand == 0) {
+                stateHandler()
+            }
+            break
+        case "idle":
+            if ((atomicState.heat_demand > 0) || (atomicState.cool_demand > 0)) {
+                stateHandler()
+            }
+            state = stat.currentValue("thermostatFanMode")
+            switch ("$state.value") {
+                case "on":
+                case " on":
+                if (atomicState.fan_demand == 0) {
+                    stateHandler()
+                }
+            }
+            break
+    }
+    def levelstate = stat.currentState("heatingSetpoint")
+    new_setpoint = levelstate.value as BigDecimal
+    if (new_setpoint != atomicState.heat_setpoint) {
+        heat_setHandler()
+    }
+    levelstate = stat.currentState("coolingSetpoint")
+    new_setpoint = levelstate.value as BigDecimal
+    if (new_setpoint != atomicState.cool_setpoint) {
+        cool_setHandler()
+    }
 }
 
 def child_updated() {
@@ -102,6 +202,9 @@ def child_updated() {
     parent.child_updated()
 }
 
+// This function updates atomicState.cool_demand, atomicState.heat_demand, atomicState.fan_demand, and atomicState.vent_demand
+// If any of the former three are changed, the main Zoning app is asked to re-evaluate its state
+
 def update_demand() {
     log.debug("In Zone update_demand()")
     temperature = stat.currentState("temperature")
@@ -109,16 +212,23 @@ def update_demand() {
     cool_setpoint = stat.currentState("coolingSetpoint")
     def state = stat.currentValue("thermostatOperatingState")
     fan_demand = 0
+    // pre-process which zones would join for ventilation or fan calls
+    subzone_fan_demand = 0
     def subzones = getChildApps()
+    subzones.each { sz ->
+        subzone_fan_demand += sz.get_vent_demand()
+    }    
     switch ("$state.value") {
         case "heating":
+            // the heating demand is the capacity of this main zone plus the capacities of any subzones that would join this heating call
             heat_demand = atomicState.on_capacity
             cool_demand = 0
             subzones.each { sz ->
                 heat_demand += sz.get_heat_demand("heating", heat_setpoint.value, temperature.value)
-            }    
+            }
             break
         case "cooling":
+            // the cooling demand is the capacity of this main zone plus the capacities of any subzones that would join this cooling call
             cool_demand = atomicState.on_capacity
             heat_demand = 0
             subzones.each { sz ->
@@ -126,15 +236,15 @@ def update_demand() {
             }    
             break
         case "fan only":
-            fan_demand = atomicState.on_capacity
+            // when idle or fan only command, determine if any subzones would trigger heating or cooling calls for this main zone
+            fan_demand = atomicState.on_capacity + subzone_fan_demand
         case "idle":
-        case "unselected":
             state = stat.currentValue("thermostatFanMode")
             switch ("$state.value") {
                 case "on":
                 case " on":
                     // some thermostats do not change thermostatOperatingState to "fan only" when they should
-                    fan_demand = atomicState.on_capacity
+                    fan_demand = atomicState.on_capacity + subzone_fan_demand
             }
             heat_demand = 0
             cool_demand = 0
@@ -142,6 +252,7 @@ def update_demand() {
                 heat_demand += sz.get_heat_demand("idle", heat_setpoint.value, temperature.value)
                 cool_demand += sz.get_cool_demand("idle", cool_setpoint.value, temperature.value)
             }    
+            // if any subzones trigger a heating or cooling call, add this main zones capacity to the capacities of those subzones
             if (heat_demand > 0) {
                 heat_demand += atomicState.on_capacity
             }
@@ -149,6 +260,12 @@ def update_demand() {
                 cool_demand += atomicState.on_capacity
             }
             break
+    }
+    // vent_demand is the capacity that would be accepted if the zone control app decides to run ventilation.  It is not a call to the zone control.
+    if (atomicState.on_for_vent) {
+        atomicState.vent_demand = subzone_fan_demand + atomicState.on_capacity
+    } else {
+        atomicState.vent_demand = 0
     }
     if ((atomicState.heat_demand != heat_demand) || (atomicState.cool_demand != cool_demand)|| (atomicState.fan_demand != fan_demand)) {
         atomicState.heat_demand = heat_demand
@@ -158,16 +275,18 @@ def update_demand() {
     }
 }
 
-def stateHandler(evt) {
+def stateHandler(evt=NULL) {
     log.debug("In Zone stateHandler()")
     if (wired) {
         def state = stat.currentValue("thermostatOperatingState")
         parent.update_wired_mode("$state.value")
     }
-    update_demand()
+    update_demand() // this does the work of calculating what should be demanded of the zone control app
 }
 
-def tempHandler(evt) {
+def tempHandler(evt=NULL) {
+    // changes in temperature from the thermostat do not directly result in heating or cooling calls - those result from operating state changes
+    // changes in temperature may result in a subzone starting or ending cooling call or heating call
     log.debug("In Zone tempHandler()")
     def levelstate = stat.currentState("temperature")
     new_temp = levelstate.value as BigDecimal
@@ -197,7 +316,9 @@ def tempHandler(evt) {
     }
 }
 
-def heat_setHandler(evt) {
+def heat_setHandler(evt=NULL) {
+    // changes in thermostat set point do not directly result in heating calls - those result from operating state changes
+    // changes in setpoint may result in a subzone starting or ending a heating call
     log.debug("In Zone heat_setHandler()")
     def levelstate = stat.currentState("heatingSetpoint")
     new_setpoint = levelstate.value as BigDecimal
@@ -218,7 +339,9 @@ def heat_setHandler(evt) {
     }
 }
 
-def cool_setHandler(evt) {
+def cool_setHandler(evt=NULL) {
+    // changes in thermostat set point do not directly result in cooling calls - those result from operating state changes
+    // changes in setpoint may result in a subzone starting or ending a cooling call
     log.debug("In SubZone cool_setHandler()")
     def levelstate = stat.currentState("coolingSetpoint")
     new_setpoint = levelstate.value as BigDecimal
@@ -239,7 +362,7 @@ def cool_setHandler(evt) {
     }
 }
 
-def on_for_ventHandler(evt) {
+def on_for_ventHandler(evt=NULL) {
     log.debug("In SubZone on_for_ventHandler()")
     def currentvalue = on_for_vent.currentValue("switch")
     switch ("$currentvalue") {
@@ -250,7 +373,10 @@ def on_for_ventHandler(evt) {
             atomicState.on_for_vent = true
             break;
     }
+    update_demand()
 }
+
+// These functions let the zone control app and and subzones access this zones state
 
 def get_off_capacity() {
     return atomicState.off_capacity
@@ -272,6 +398,10 @@ def get_fan_demand() {
     return atomicState.fan_demand
 }
 
+def get_vent_demand() {
+    return atomicState.vent_demand
+}
+
 def get_heat_setpoint() {
     return atomicState.heat_setpoint
 }
@@ -286,6 +416,8 @@ def get_temp() {
 def get_on_for_vent() {
     return atomicState.on_for_vent
 }
+
+// This function is called by the zoning app to select this zone.  In turn, it selects appropriate subzones.
 
 def turn_on(mode) {
     log.debug("In Zone turn_on($mode)")
@@ -337,6 +469,12 @@ def turn_off() {
     } else {
         zone.off()
     }
+}
+
+def turn_idle() {
+    // when the equipment is idle, including the blower, the zone switch is turned off, regardless of whether it is normally on or normally off
+    atomicState.current_mode = "idle"
+    zone.off()
 }
 
 def handle_overpressure() {
