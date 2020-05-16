@@ -12,13 +12,16 @@ definition(
 
 preferences {
     page(name: "pageOne", nextPage: "pageTwo", uninstall: true) {
-        section {
+        section ("Zones") {
             app(name: "zones", appName: "HVAC Zone", namespace: "rbaldwi3", title: "Create New Zone", multiple: true, submitOnChange: true)
         }
         section ("Equipment Types") {
             input(name: "heat_type", type: "enum", required: true, title: "Heating Equipment Type", options: ["None","Single stage","Two stage"])
             input(name: "cool_type", type: "enum", required: true, title: "Cooling Equipment Type", options: ["None","Single stage","Two stage"])
             input(name: "vent_type", type: "enum", required: true, title: "Ventilation Equipment Type", options: ["None", "Requires Blower", "Doesn't Require Blower"])
+        }
+        section ("Wired Thermostat") {
+            input "wired_tstat", "capability.thermostat", required: false, title: "Thermostat wired to Equipment (not required)"
         }
     }
     page(name: "pageTwo", title: "Equipment Data", install: true, uninstall: true)
@@ -66,7 +69,14 @@ def pageTwo() {
                     input "Y2", "capability.switch", required: true, title: "Command Cooling stage 2"
                     break
             }
-            input "G", "capability.switch", required:true, title: "Command Fan"
+            if (wired_tstat) {
+                input "fan_by_wired_tstat", "bool", required: true, title: "Wired Thermostat Controls Fan", default: false, submitOnChange: true
+                if (!fan_by_wired_tstat) {
+                    input "G", "capability.switch", required:true, title: "Command Fan"
+                }
+            } else {
+                input "G", "capability.switch", required:true, title: "Command Fan"
+            }
             switch ("$vent_type") {
                 case "Requires Blower":
                 case "Doesn't Require Blower":
@@ -175,9 +185,15 @@ def initialize() {
         subscribe(over_pressure, "switch.on", over_pressure_stage1)
         state.over_pressure_time = now() - 5*60*1000
     }
-    state.wired_mode = "none"
-    // call zone_call_changed to put outputs in a state consistent with the current inputs
-    zone_call_changed()
+    if (wired_tstat) {
+        subscribe(stat, "thermostatOperatingState", wired_tstatHandler)
+        wired_tstatHandler() // sets wired mode and calls zone_call_changed()
+    } else {
+        fan_by_wired_tstat = false
+        state.wired_mode = "none"
+        // call zone_call_changed() to put outputs in a state consistent with the current inputs
+        zone_call_changed()
+    }
     // schedule any periodic refreshes
     switch ("$output_refresh_interval") {
         case "None":
@@ -236,9 +252,9 @@ def refresh_outputs() {
             case "Forced":
                 V.on()
                 if (state.fan_running_by_request || ("$vent_type" == "Requires Blower")) {
-                    G.on()
+                    switch_fan_on()
                 } else {
-                    G.off()
+                    switch_fan_off()
                 }
                 break
             case "Complete":
@@ -246,9 +262,9 @@ def refresh_outputs() {
             case "Waiting":
                 V.off()
                 if (state.fan_running_by_request) {
-                    G.on()
+                    switch_fan_on()
                 } else {
-                    G.off()
+                    switch_fan_off()
                 }
                 break
         }
@@ -314,6 +330,29 @@ def child_updated() {
     }
 }
 
+def wired_tstatHandler(evt=NULL) {
+    // this routine is called if a zone which is hardwired to the equipment gets updated.
+    // the purpose of the routine is to ensure that the app does not issue equipment calls inconsistent with the hardwired thermostat
+    log.debug("In wired_tstatHandler")
+    def state = wired_tstat.currentValue("thermostatOperatingState")
+    state.wired_mode = "$state.value"  // this variable is used in other routines to make sure a new equipment command is not inconsistent
+    switch ("$state.value") {
+        case "heating":
+            turn_off_cool()
+            state.heating_mode = true
+            break
+        case "cooling":
+            turn_off_heat()
+            state.heating_mode = false
+            break
+        case "fan only":
+        case "idle":
+            break
+    }
+    zone_call_changed() // zone_call_changed will be called twice, but I need to ensure that the last one is after this function
+}
+
+/*
 def update_wired_mode(new_mode) {
     // this routine is called if a zone which is hardwired to the equipment gets updated.
     // the purpose of the routine is to ensure that the app does not issue equipment calls inconsistent with the hardwired thermostat
@@ -330,6 +369,7 @@ def update_wired_mode(new_mode) {
             break
     }
 }
+*/
 
 // This routine handles a change in status in a zone
 // It also gets called back mode_change_delay minutes after heating or cooling is turned off to re-check whether opposite mode should be started
@@ -609,24 +649,45 @@ def serve_fan_call() {
     turn_on_fan()
 }
 
+// switch_fan_on() and switch_fan_off change either the fan switch or the wired thermostat
+
+def switch_fan_on() {
+    if (fan_by_wired_tstat) {
+        wired_tstat.fanOn()
+    } else {
+        G.on()
+    }
+}
+
+def switch_fan_off() {
+    if (fan_by_wired_tstat) {
+        wired_tstat.fanAuto()
+    } else {
+        G.off()
+    }
+}
+
+// turn_on_fan() and turn_off_fan() are called when fan is requested from a manual change to a thermostat
+// they should not be called to turn on the fan for ventilation
+
 def turn_on_fan() {
     log.debug("In turn_on_fan()")
     state.fan_running_by_request = true;
-    G.on()
+    switch_fan_on()
 }
 
 def turn_off_fan() {
     log.debug("In turn_off_fan()")
     state.fan_running_by_request = false;
     if ("$vent_type" != "Requires Blower") {
-        G.off()
+        switch_fan_off()
         return
     }
     switch ("$state.vent_state") {
         case "Complete":
         case "Off":
         case "Waiting":
-            G.off()
+            switch_fan_off()
             break
         case "Forced":
         case "End_Phase":
@@ -676,7 +737,7 @@ def turn_on_vent() {
         case "End_Phase":
             // turn on zones
             def zones = getChildApps()
-            if (state.heat_demand+state.off_capacity >= cfmG) {
+            if (state.vent_demand+state.off_capacity >= cfmG) {
                 // demand is high enough with only zones calling for vent and fan
                 zones.each { z ->
                     if (z.get_on_for_vent()  || z.get_fan_demand()) {
@@ -693,7 +754,7 @@ def turn_on_vent() {
             }
     }
     V.on()
-    G.on()
+    switch_fan_on()
 }
 
 def turn_off_vent() {
@@ -702,7 +763,7 @@ def turn_off_vent() {
     if (state.fan_running_by_request) {
         serve_fan_call()
     } else {
-        G.off()
+        switch_fan_off()
         def zones = getChildApps()
         zones.each { z ->
             z.turn_idle()
@@ -903,9 +964,10 @@ def equipment_off_adjust_vent() {
                             z.turn_idle()
                         }
                     }
+                    break
                 case "End_Phase":
                 case "Forced":
-                    // Could get here due to extraneous call from mode_change_delay
+                    turn_on_vent() // may already be on, but this adjusts the zone selections correctly
                     break;
                 case "Running":
                     log.debug("vent off - Waiting")
