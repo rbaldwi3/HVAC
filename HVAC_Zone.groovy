@@ -14,7 +14,6 @@ definition(
 preferences {
     section ("Zone Data") {
         input "stat", "capability.thermostat", required: true, title: "Thermostat"
-        input "wired", "bool", required: true, title: "This thermostat is wired to the equipment (no more than one should be)", default: false
         input "cfm", "number", required: true, title: "Maximum airflow for Zone", range: "200 . . 3000"
         input "closed_pos", "number", required: true, title: "Percent Open when in Off position", default: 0, range: "0 . . 100"
         input "zone", "capability.switch", required: true, title: "Switch for selection of Zone" // future feature - percentage control as opposed to on/off
@@ -277,10 +276,12 @@ def update_demand() {
 
 def stateHandler(evt=NULL) {
     log.debug("In Zone stateHandler()")
+/*
     if (wired) {
         def state = stat.currentValue("thermostatOperatingState")
         parent.update_wired_mode("$state.value")
     }
+*/
     update_demand() // this does the work of calculating what should be demanded of the zone control app
 }
 
@@ -376,7 +377,7 @@ def on_for_ventHandler(evt=NULL) {
             atomicState.on_for_vent = true
             break;
         case "off":
-            atomicState.on_for_vent = true
+            atomicState.on_for_vent = false
             break;
     }
     update_demand()
