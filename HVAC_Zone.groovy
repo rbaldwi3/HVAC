@@ -128,7 +128,7 @@ def initialize() {
 }
 
 def refresh_outputs() {
-    log.debug("In refresh_outputs()")
+    // log.debug("In refresh_outputs()")
     switch ("$atomicState.current_mode") {
         case "unselected":
             turn_off()
@@ -142,7 +142,7 @@ def refresh_outputs() {
 }
 
 def refresh_inputs() {
-    log.debug("In refresh_inputs()")
+    // log.debug("In refresh_inputs()")
     if (stat.hasCapability("refresh")) {
         stat.refresh()
     }
@@ -190,7 +190,7 @@ def refresh_inputs() {
 }
 
 def child_updated() {
-    log.debug("In Zone child_updated()")
+    // log.debug("In Zone child_updated()")
     // Preprocessing of airflow per zone
     atomicState.off_capacity = settings.cfm * settings.closed_pos / 100
     atomicState.on_capacity = settings.cfm - atomicState.off_capacity
@@ -205,7 +205,7 @@ def child_updated() {
 // If any of the former three are changed, the main Zoning app is asked to re-evaluate its state
 
 def update_demand() {
-    log.debug("In Zone update_demand()")
+    // log.debug("In Zone update_demand()")
     temperature = stat.currentState("temperature")
     heat_setpoint = stat.currentState("heatingSetpoint")
     cool_setpoint = stat.currentState("coolingSetpoint")
@@ -275,7 +275,7 @@ def update_demand() {
 }
 
 def stateHandler(evt=NULL) {
-    log.debug("In Zone stateHandler()")
+    // log.debug("In Zone stateHandler()")
 /*
     if (wired) {
         def state = stat.currentValue("thermostatOperatingState")
@@ -288,7 +288,7 @@ def stateHandler(evt=NULL) {
 def tempHandler(evt=NULL) {
     // changes in temperature from the thermostat do not directly result in heating or cooling calls - those result from operating state changes
     // changes in temperature may result in a subzone starting or ending cooling call or heating call
-    log.debug("In Zone tempHandler()")
+    // log.debug("In Zone tempHandler()")
     def levelstate = stat.currentState("temperature")
     new_temp = levelstate.value as BigDecimal
     // Note - update demand is called at half-degree offsets from the actual thresholds to avoid rapid cycling due to small temperature variations
@@ -320,7 +320,7 @@ def tempHandler(evt=NULL) {
 def heat_setHandler(evt=NULL) {
     // changes in thermostat set point do not directly result in heating calls - those result from operating state changes
     // changes in setpoint may result in a subzone starting or ending a heating call
-    log.debug("In Zone heat_setHandler()")
+    // log.debug("In Zone heat_setHandler()")
     def levelstate = stat.currentState("heatingSetpoint")
     new_setpoint = levelstate.value as BigDecimal
     def subzones = getChildApps()
@@ -346,7 +346,7 @@ def heat_setHandler(evt=NULL) {
 def cool_setHandler(evt=NULL) {
     // changes in thermostat set point do not directly result in cooling calls - those result from operating state changes
     // changes in setpoint may result in a subzone starting or ending a cooling call
-    log.debug("In SubZone cool_setHandler()")
+    // log.debug("In SubZone cool_setHandler()")
     def levelstate = stat.currentState("coolingSetpoint")
     new_setpoint = levelstate.value as BigDecimal
     def subzones = getChildApps()
@@ -370,7 +370,7 @@ def cool_setHandler(evt=NULL) {
 }
 
 def on_for_ventHandler(evt=NULL) {
-    log.debug("In SubZone on_for_ventHandler()")
+    // log.debug("In SubZone on_for_ventHandler()")
     def currentvalue = on_for_vent.currentValue("switch")
     switch ("$currentvalue") {
         case "on":
@@ -428,7 +428,7 @@ def get_on_for_vent() {
 // This function is called by the zoning app to select this zone.  In turn, it selects appropriate subzones.
 
 def turn_on(mode) {
-    log.debug("In Zone turn_on($mode)")
+    // log.debug("In Zone turn_on($mode)")
     atomicState.current_mode = mode
     temperature = stat.currentState("temperature")
     def subzones = getChildApps()
@@ -486,7 +486,7 @@ def turn_idle() {
 }
 
 def handle_overpressure() {
-    log.debug("In Zone handle_overpressure()")
+    // log.debug("In Zone handle_overpressure()")
     def currentvalue = zone.currentValue("switch")
     switch ("$currentvalue") {
         case "on":
