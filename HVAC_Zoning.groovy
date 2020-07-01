@@ -1,20 +1,3 @@
-/**
- *  HVAC Zoning
- *
- *  Copyright 2020 Reid Baldwin
- *
- *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
- *  in compliance with the License. You may obtain a copy of the License at:
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
- *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
- *  for the specific language governing permissions and limitations under the License.
- *
- * version 0.1 - Initial Release
- */
-
 definition(
     name: "HVAC Zoning",
     namespace: "rbaldwi3",
@@ -284,7 +267,7 @@ def refresh_outputs() {
             case "Off":
             case "Waiting":
                 V.off()
-                if (state.fan_running_by_request) {
+                if (state.fan_running_by_request || state.cooling_equipment_running) {
                     switch_fan_on()
                 } else {
                     switch_fan_off()
@@ -570,6 +553,7 @@ def turn_on_cool() {
     // turn on cooling equipment if not already on
     if (!state.cooling_equipment_running) {
         state.last_cooling_start = now()
+        switch_fan_on()
         Y1.on()
         state.cooling_equipment_running = true
         runIn(1, equipment_on_adjust_vent)
@@ -614,6 +598,9 @@ def turn_off_cool() {
                 Y2.off()
             case "Single stage":
                 Y1.off()
+        }
+        if (!state.fan_running_by_request) {
+            turn_off_fan()
         }
         state.cooling_equipment_running = false
         runIn(60 * mode_change_delay, zone_call_changed)
@@ -674,6 +661,7 @@ def switch_fan_off() {
 }
 
 // turn_on_fan() and turn_off_fan() are called when fan is requested from a manual change to a thermostat
+// turn_fan_off() is also called to turn off the fan, if appropriate, at the end of a cooling call
 // they should not be called to turn on the fan for ventilation
 
 def turn_on_fan() {
