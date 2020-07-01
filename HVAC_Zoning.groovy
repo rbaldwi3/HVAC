@@ -136,6 +136,7 @@ def pageTwo() {
                                                                                                                  "Every 15 minutes","Every 30 minutes"]) 
             input(name:"input_refresh_interval", type:"enum", required: true, title: "Input refresh", options: ["None","Every 5 minutes","Every 10 minutes",
                                                                                                                  "Every 15 minutes","Every 30 minutes"]) 
+            input "status", "device.HVACZoningStatus", required: false, title: "Status Reporting Device (Optional)"
         }
     }
 }
@@ -197,6 +198,9 @@ def initialize() {
                         turn_on_vent()
                         break;
                 }
+            }
+            if (status) {
+                status.setventState("$state.vent_state")
             }
     }
     if (over_pressure) {
@@ -825,6 +829,9 @@ def start_vent_interval() {
             }
             break;
     }
+    if (status) {
+        status.setventState("$state.vent_state")
+    }
 }
 
 def vent_force_activated(evt=NULL) {
@@ -858,6 +865,9 @@ def vent_force_activated(evt=NULL) {
             break
         case "Doesn't Require Blower":
             V.on()
+    }
+    if (status) {
+        status.setventState("$state.vent_state")
     }
 }
 
@@ -913,6 +923,9 @@ def vent_force_deactivated(evt=NULL) {
         state.vent_state = "Off"
         turn_off_vent()
     }
+    if (status) {
+        status.setventState("$state.vent_state")
+    }
 }
 
 def vent_control_activated(evt=NULL) {
@@ -941,18 +954,27 @@ def vent_control_deactivated(evt=NULL) {
         state.vent_state = "Off"
         turn_off_vent()
     }
+    if (status) {
+        status.setventState("$state.vent_state")
+    }
 }
 
 def vent_runtime_reached() {
     // log.debug("In vent_runtime_reached()")
     state.vent_state = "Complete"
     turn_off_vent()
+    if (status) {
+        status.setventState("$state.vent_state")
+    }
 }
 
 def vent_deadline_reached() {
     // log.debug("In vent_deadline_reached()")
     state.vent_state = "End_Phase"
     turn_on_vent()
+    if (status) {
+        status.setventState("$state.vent_state")
+    }
 }
 
 def equipment_off_adjust_vent() {
@@ -995,6 +1017,9 @@ def equipment_off_adjust_vent() {
                     break;
             }
     }
+    if (status) {
+        status.setventState("$state.vent_state")
+    }
 }
 
 def equipment_on_adjust_vent() {
@@ -1021,6 +1046,9 @@ def equipment_on_adjust_vent() {
                     runIn(state.vent_runtime, vent_runtime_reached)
                     break;
             }
+    }
+    if (status) {
+        status.setventState("$state.vent_state")
     }
 }
 
