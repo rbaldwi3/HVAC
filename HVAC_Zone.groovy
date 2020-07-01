@@ -13,6 +13,7 @@
  *  for the specific language governing permissions and limitations under the License.
  *
  * version 0.1 - Initial Release
+ * version 0.2 -
  */
 
 definition(
@@ -30,7 +31,7 @@ definition(
 
 preferences {
     section ("Zone Data") {
-        input "stat", "capability.thermostat", required: true, title: "Thermostat"
+        input "stat", "capability.thermostatOperatingState", required: true, title: "Thermostat"
         input "cfm", "number", required: true, title: "Maximum airflow for Zone", range: "200 . . 3000"
         input "closed_pos", "number", required: true, title: "Percent Open when in Off position", default: 0, range: "0 . . 100"
         input "zone", "capability.switch", required: true, title: "Switch for selection of Zone" // future feature - percentage control as opposed to on/off
@@ -66,16 +67,24 @@ def initialize() {
     atomicState.on_for_vent = true
     // Subscribe to state changes
     subscribe(stat, "thermostatOperatingState", stateHandler)
-    subscribe(stat, "thermostatFanMode", stateHandler)
-	subscribe(stat, "temperature", tempHandler)
-    subscribe(stat, "heatingSetpoint", heat_setHandler)
-    subscribe(stat, "coolingSetpoint", cool_setHandler)
-    def levelstate = stat.currentState("temperature")
-    atomicState.temperature = levelstate.value as BigDecimal
-    levelstate = stat.currentState("heatingSetpoint")
-    atomicState.heat_setpoint = levelstate.value as BigDecimal
-    levelstate = stat.currentState("coolingSetpoint")
-    atomicState.cool_setpoint = levelstate.value as BigDecimal
+    if (stat.hasAttribute("thermostatFanMode")) {
+        subscribe(stat, "thermostatFanMode", stateHandler)
+    }
+    if (stat.hasAttribute("thermostatFanMode")) {
+    	subscribe(stat, "temperature", tempHandler)
+        def levelstate = stat.currentState("temperature")
+        atomicState.temperature = levelstate.value as BigDecimal
+    }
+    if (stat.hasAttribute("thermostatFanMode")) {
+        subscribe(stat, "heatingSetpoint", heat_setHandler)
+        def levelstate = stat.currentState("heatingSetpoint")
+        atomicState.heat_setpoint = levelstate.value as BigDecimal
+    }
+    if (stat.hasAttribute("thermostatFanMode")) {
+        subscribe(stat, "coolingSetpoint", cool_setHandler)
+        def levelstate = stat.currentState("coolingSetpoint")
+        atomicState.cool_setpoint = levelstate.value as BigDecimal
+    }
     def value = zone.currentValue("switch")
     switch ("$value") {
         case "on":
