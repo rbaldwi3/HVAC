@@ -31,7 +31,7 @@ definition(
 
 preferences {
     section ("Zone Data") {
-        input "stat", "capability.thermostatOperatingState", required: true, title: "Thermostat"
+        input "stat", "capability.thermostatOperatingState", required: true, title: "Thermostat", submitOnChange: true
         input "cfm", "number", required: true, title: "Maximum airflow for Zone", range: "200 . . 3000"
         input "closed_pos", "number", required: true, title: "Percent Open when in Off position", default: 0, range: "0 . . 100"
         input "zone", "capability.switch", required: true, title: "Switch for selection of Zone" // future feature - percentage control as opposed to on/off
@@ -70,17 +70,17 @@ def initialize() {
     if (stat.hasAttribute("thermostatFanMode")) {
         subscribe(stat, "thermostatFanMode", stateHandler)
     }
-    if (stat.hasAttribute("thermostatFanMode")) {
+    if (stat.hasAttribute("temperature")) {
     	subscribe(stat, "temperature", tempHandler)
         def levelstate = stat.currentState("temperature")
         atomicState.temperature = levelstate.value as BigDecimal
     }
-    if (stat.hasAttribute("thermostatFanMode")) {
+    if (stat.hasAttribute("heatingSetpoint")) {
         subscribe(stat, "heatingSetpoint", heat_setHandler)
         def levelstate = stat.currentState("heatingSetpoint")
         atomicState.heat_setpoint = levelstate.value as BigDecimal
     }
-    if (stat.hasAttribute("thermostatFanMode")) {
+    if (stat.hasAttribute("coolingSetpoint")) {
         subscribe(stat, "coolingSetpoint", cool_setHandler)
         def levelstate = stat.currentState("coolingSetpoint")
         atomicState.cool_setpoint = levelstate.value as BigDecimal
@@ -203,15 +203,19 @@ def refresh_inputs() {
             }
             break
     }
-    def levelstate = stat.currentState("heatingSetpoint")
-    new_setpoint = levelstate.value as BigDecimal
-    if (new_setpoint != atomicState.heat_setpoint) {
-        heat_setHandler()
+    if (stat.hasAttribute("heatingSetpoint")) {
+        def levelstate = stat.currentState("heatingSetpoint")
+        new_setpoint = levelstate.value as BigDecimal
+        if (new_setpoint != atomicState.heat_setpoint) {
+            heat_setHandler()
+        }
     }
-    levelstate = stat.currentState("coolingSetpoint")
-    new_setpoint = levelstate.value as BigDecimal
-    if (new_setpoint != atomicState.cool_setpoint) {
-        cool_setHandler()
+    if (stat.hasAttribute("coolingSetpoint")) {
+        levelstate = stat.currentState("coolingSetpoint")
+        new_setpoint = levelstate.value as BigDecimal
+        if (new_setpoint != atomicState.cool_setpoint) {
+            cool_setHandler()
+        }
     }
 }
 
@@ -232,9 +236,11 @@ def child_updated() {
 
 def update_demand() {
     // log.debug("In Zone update_demand()")
-    temperature = stat.currentState("temperature")
-    heat_setpoint = stat.currentState("heatingSetpoint")
-    cool_setpoint = stat.currentState("coolingSetpoint")
+    if (full_thermostat()) {
+        temperature = stat.currentState("temperature")
+        heat_setpoint = stat.currentState("heatingSetpoint")
+        cool_setpoint = stat.currentState("coolingSetpoint")
+    }
     def state = stat.currentValue("thermostatOperatingState")
     fan_demand = 0
     // pre-process which zones would join for ventilation or fan calls
@@ -249,7 +255,11 @@ def update_demand() {
             heat_demand = atomicState.on_capacity
             cool_demand = 0
             subzones.each { sz ->
-                heat_demand += sz.get_heat_demand("heating", heat_setpoint.value, temperature.value)
+                if (full_thermostat()) {
+                    heat_demand += sz.get_heat_demand("heating", heat_setpoint.value, temperature.value)
+                } else {
+                    heat_demand += sz.get_heat_demand("heating")
+                }
             }
             break
         case "cooling":
@@ -257,7 +267,11 @@ def update_demand() {
             cool_demand = atomicState.on_capacity
             heat_demand = 0
             subzones.each { sz ->
-                cool_demand += sz.get_cool_demand("cooling", cool_setpoint.value, temperature.value)
+                if (full_thermostat()) {
+                    cool_demand += sz.get_cool_demand("cooling", cool_setpoint.value, temperature.value)
+                } else {
+                    cool_demand += sz.get_cool_demand("cooling")
+                }
             }    
             break
         case "fan only":
@@ -274,8 +288,13 @@ def update_demand() {
             heat_demand = 0
             cool_demand = 0
             subzones.each { sz ->
-                heat_demand += sz.get_heat_demand("idle", heat_setpoint.value, temperature.value)
-                cool_demand += sz.get_cool_demand("idle", cool_setpoint.value, temperature.value)
+                if (full_thermostat()) {
+                    heat_demand += sz.get_heat_demand("idle", heat_setpoint.value, temperature.value)
+                    cool_demand += sz.get_cool_demand("idle", cool_setpoint.value, temperature.value)
+                } else {
+                    heat_demand += sz.get_heat_demand("idle", heat_setpoint.value, temperature.value)
+                    cool_demand += sz.get_cool_demand("idle", cool_setpoint.value, temperature.value)
+                }
             }    
             // if any subzones trigger a heating or cooling call, add this main zones capacity to the capacities of those subzones
             if (heat_demand > 0) {
@@ -290,7 +309,7 @@ def update_demand() {
     if (atomicState.on_for_vent) {
         atomicState.vent_demand = subzone_fan_demand + atomicState.on_capacity
     } else {
-        atomicState.vent_demand = 0
+        atomicState.vent_demand = fan_demand
     }
     if ((atomicState.heat_demand != heat_demand) || (atomicState.cool_demand != cool_demand)|| (atomicState.fan_demand != fan_demand)) {
         atomicState.heat_demand = heat_demand
@@ -409,6 +428,10 @@ def on_for_ventHandler(evt=NULL) {
     update_demand()
 }
 
+Boolean full_thermostat() {
+    return stat.hasAttribute("coolingSetpoint") && stat.hasAttribute("heatingSetpoint") && stat.hasAttribute("temperature")
+}
+
 // These functions let the zone control app and and subzones access this zones state
 
 def get_off_capacity() {
@@ -456,38 +479,70 @@ def get_on_for_vent() {
 def turn_on(mode) {
     // log.debug("In Zone turn_on($mode)")
     atomicState.current_mode = mode
-    temperature = stat.currentState("temperature")
     def subzones = getChildApps()
-    switch ("$mode") {
-        case "heating":
-            heat_setpoint = stat.currentState("heatingSetpoint")
-            subzones.each { sz ->
-                if (sz.get_heat_demand("heating", heat_setpoint.value, temperature.value) > 0) {
-                    sz.turn_on()
-                } else {
-                    sz.turn_off()
+    if (parent.full_thermostat()) {
+        temperature = stat.currentState("temperature")
+        switch ("$mode") {
+            case "heating":
+                heat_setpoint = stat.currentState("heatingSetpoint")
+                subzones.each { sz ->
+                    if (sz.get_heat_demand("heating", heat_setpoint.value, temperature.value) > 0) {
+                        sz.turn_on()
+                    } else {
+                        sz.turn_off()
+                    }
                 }
-            }
-            break
-        case "cooling":
-            cool_setpoint = stat.currentState("coolingSetpoint")
-            subzones.each { sz ->
-                if (sz.get_cool_demand("cooling", cool_setpoint.value, temperature.value) > 0) {
-                    sz.turn_on()
-                } else {
-                    sz.turn_off()
+                break
+            case "cooling":
+                cool_setpoint = stat.currentState("coolingSetpoint")
+                subzones.each { sz ->
+                    if (sz.get_cool_demand("cooling", cool_setpoint.value, temperature.value) > 0) {
+                        sz.turn_on()
+                    } else {
+                        sz.turn_off()
+                    }
                 }
-            }
-            break
-        case "vent":
-            subzones.each { sz ->
-                if (sz.get_fan_switch()) {
-                    sz.turn_on()
-                } else {
-                    sz.turn_off()
+                break
+            case "vent":
+                subzones.each { sz ->
+                    if (sz.get_fan_switch()) {
+                        sz.turn_on()
+                    } else {
+                        sz.turn_off()
+                    }
                 }
-            }
-            break
+                break
+        }
+    } else {
+        switch ("$mode") {
+            case "heating":
+                subzones.each { sz ->
+                    if (sz.get_heat_demand("heating") > 0) {
+                        sz.turn_on()
+                    } else {
+                        sz.turn_off()
+                    }
+                }
+                break
+            case "cooling":
+                subzones.each { sz ->
+                    if (sz.get_cool_demand("cooling") > 0) {
+                        sz.turn_on()
+                    } else {
+                        sz.turn_off()
+                    }
+                }
+                break
+            case "vent":
+                subzones.each { sz ->
+                    if (sz.get_fan_switch()) {
+                        sz.turn_on()
+                    } else {
+                        sz.turn_off()
+                    }
+                }
+                break
+        }
     }
     if (normally_open) {
         zone.off()
