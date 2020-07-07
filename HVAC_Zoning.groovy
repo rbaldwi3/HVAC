@@ -27,7 +27,6 @@ definition(
     iconX3Url: ""
 )
 
-
 preferences {
     page(name: "pageOne", nextPage: "pageTwo", uninstall: true) {
         section ("Zones") {
@@ -39,7 +38,7 @@ preferences {
             input(name: "vent_type", type: "enum", required: true, title: "Ventilation Equipment Type", options: ["None", "Requires Blower", "Doesn't Require Blower"])
         }
         section ("Wired Thermostat") {
-            input "wired_tstat", "capability.thermostat", required: false, title: "Thermostat wired to Equipment (not required)"
+            input "wired_tstat", "capability.thermostatOperatingState", required: false, title: "Thermostat wired to Equipment (not required)"
         }
     }
     page(name: "pageTwo", title: "Equipment Data", install: true, uninstall: true)
@@ -117,12 +116,18 @@ def pageTwo() {
                 case "Two stage":
                     input "heat_stage2_delay", "number", required: true, title: "Time in stage 1 heating to trigger stage 2 (minutes)", range: "0 . . 300", default: "30"
                     input "heat_stage2_deltat", "number", required: true, title: "Temperature difference from setpoint to trigger stage 2 heating", range: "1 . . 100", default: "2"
+                case "Single stage":
+                    input "heat_min_runtime", "number", required: true, title: "Minimum Heating Runtime (minutes)", range: "1 . . 30", default: "5"
+                    input "heat_min_idletime", "number", required: true, title: "Minimum Heating Idle Time (minutes)", range: "1 . . 30", default: "5"
                     break
             }
             switch ("$cool_type") {
                 case "Two stage":
                     input "cool_stage2_delay", "number", required: true, title: "Time in stage 1 cooling to trigger stage 2 (minutes)", range: "0 . . 300", default: "30"
                     input "cool_stage2_deltat", "number", required: true, title: "Temperature difference from setpoint to trigger stage 2 cooling", range: "1 . . 100", default: "2"
+                case "Single stage":
+                    input "cool_min_runtime", "number", required: true, title: "Minimum Cooling Runtime (minutes)", range: "1 . . 30", default: "5"
+                    input "cool_min_idletime", "number", required: true, title: "Minimum Cooling Idle Time (minutes)", range: "1 . . 30", default: "5"
                     break
             }
             switch ("$vent_type") {
@@ -143,11 +148,9 @@ def pageTwo() {
 
 def installed() {
     // log.debug("In installed()")
-    state.heating_mode = true  // false implies cooling mode, this indicates which equipment ran most recently but doesn't imply either is currently running
-    // these three variables indicate if a request is currently being served.  At most one should be true at a time.
-    state.heating_equipment_running = false
-    state.cooling_equipment_running = false
-    state.fan_running_by_request = false
+    state.equipment_state = "Idle"
+    state.vent_state = "Off"
+    state.fan_state = "Off"
     // These variables indicate the timing of the last cooling and heating equipment runs.
     // When equipment is running start time > stop time. Otherwise, stop time > start time.
     state.last_cooling_start = now() - 1000*60*30
@@ -187,7 +190,7 @@ def initialize() {
                     state.vent_state = "Off"
                     break;
             }
-            turn_off_vent()
+            V.off()
             if (vent_force) {
                 subscribe(vent_force, "switch.on", vent_force_activated)
                 subscribe(vent_force, "switch.off", vent_force_deactivated)
@@ -195,7 +198,7 @@ def initialize() {
                 switch ("$currentvalue") {
                     case "on":
                         state.vent_state = "Forced"
-                        turn_on_vent()
+                        V.on()
                         break;
                 }
             }
@@ -348,9 +351,38 @@ def refresh_inputs() {
     }
 }
 
+// Equipment Control Routines
+// The variable state.equip_state indicates the current state of heating and cooling equipment.  Possible values are:
+// "Idle": which means that both heating and cooling equipment has been off for long enough that either heating or cooling calls could be served if they occur
+// "IdleH": which means that both heating and cooling equipment is off and the heating equipment turned off long enough ago to serve a heat call (but not a cooling call)
+// "PauseH": which means that both heating and cooling equipment is off, but the heating equipment turned off recently enough that new calls should not be served yet
+// "Heating": which means that heating equipment is running and has been running long enough to turn if off when heating calls end
+// "HeatingL": which means that heating equipment is running but has turn on recently enough that it needs to remain on even if a heating call ends
+// "IdleC": which means that both heating and cooling equipment is off and the cooling equipment turned off long enough ago to serve a cooling call (but not a heat call)
+// "PauseC": which means that both heating and cooling equipment is off, but the cooling equipment turned off recently enough that new calls should not be served yet
+// "Cooling": which means that coolinging equipment is running and has been running long enough to turn if off when cooling calls end
+// "CoolingL": which means that cooling equipment is running but has turn on recently enough that it needs to remain on even if a cooling call ends
+
+// The variable state.fan_state indicates the current state of the blower.  Possible values are:
+// "Off": blower is off
+// "On_for_cooling": blower is commanded on because cooling is being commanded (user may also be requesting and ventilation may also be underway)
+// "On_for_vent": blower is commanded on because ventilation is being commanded (user may also be requesting)
+// "On_by_request": blower is commanded on due to fan call from a zone (ventilation and cooling off)
+
+// The variable state.vent_state indicates the current state of the ventilation.  Possible values are:
+// "Off": which means that the user has turned ventilation off
+// "Forced": which means that the user has forced ventilation to run, regardless of equipment state of how much it has already run recently
+// "Waiting": which means ventilation has not yet run enough during the present interval, but the app is waiting for equipment to run so
+//   that ventilation can be done during a cooling or heating call.  In this state, a call to vent_deadline_reached() is scheduled for when
+//   ventilation should start even if there is no heating or cooling call.
+// "Complete": which means ventilation has already run enough during the present interval
+// "Running": which means ventilation is running during a heating or cooling call.  In this state, a call to vent_runtime_reached() is scheduled
+//   for when ventilation will have run enough in this interval and should be stopped even if the heating or cooling call continues.
+// "End_Phase": which means that ventilation needs to run for the remainder of the interval in order to run enough during the present interval
+
 def child_updated() {
     // log.debug("In child_updated()")
-    // off_capacity is the airflow capacity of the system if all of the zones are unselected
+    // off_capacity is the airflow capacity of the system if all of the zones are unselectedg
     state.off_capacity = 0
     def zones = getChildApps()
     zones.each { z ->
@@ -359,11 +391,11 @@ def child_updated() {
 }
 
 def wired_tstatHandler(evt=NULL) {
+    /* TO DO: I need to re-think the concept of a wired thermostat after I get the stat-machine equipment handling working
     // this routine is called if a zone which is hardwired to the equipment gets updated.
     // the purpose of the routine is to ensure that the app does not issue equipment calls inconsistent with the hardwired thermostat
     // log.debug("In wired_tstatHandler")
     def opstate = wired_tstat.currentValue("thermostatOperatingState")
-    state.wired_mode = "$opstate.value"  // this variable is used in other routines to make sure a new equipment command is not inconsistent
     switch ("$state.value") {
         case "heating":
             turn_off_cool()
@@ -378,10 +410,11 @@ def wired_tstatHandler(evt=NULL) {
             break
     }
     zone_call_changed() // zone_call_changed will be called twice, but I need to ensure that the last one is after this function
+    */
 }
 
 // This routine handles a change in status in a zone
-// It also gets called back mode_change_delay minutes after heating or cooling is turned off to re-check whether opposite mode should be started
+// It also gets called by equipment_state_timeout() after time-based equipment state changes
 
 def zone_call_changed() {
     // log.debug("In zone_call_changed()")
@@ -390,6 +423,9 @@ def zone_call_changed() {
     state.cool_demand = 0
     state.heat_demand = 0
     state.fan_demand = 0
+    // heat_accept and cool_accept represent the cubic feet per minute of airflow the zone volunteers to accept (as a dump zone)
+    state.cool_accept = 0
+    state.heat_accept = 0
     // vent demand is the cubic feet per minute that zones would accept if the system goes into ventilation mode with no heating or cooling equipment running
     state.vent_demand = 0
     def zones = getChildApps()
@@ -398,84 +434,147 @@ def zone_call_changed() {
         state.heat_demand += z.get_heat_demand()
         state.fan_demand += z.get_fan_demand()
         state.vent_demand += z.get_vent_demand()
+        // state.cool_accept += z.get_cool_accept()
+        // state.heat_accept += z.get_heat_accept()
     }
-    log.debug("cool_demand = $state.cool_demand, heat_demand = $state.heat_demand, fan_demand = $state.fan_demand, vent_demand = $state.vent_demand")
-    // if heating equipment has been used more recently than cooling equipment, then state.heating_mode is true
-    // if cooling equipment has been used more recently than heating equipment, then state.heating_mode is false
-    if (state.heating_mode) { // in heating mode, heating gets priority over cooling
-       // check for servable heat call
-       switch ("$heat_type") {
-            case "Single stage":
-            case "Two stage":
-                if (state.heat_demand > 0) {
-                    if (state.heat_demand+state.off_capacity >= cfmW1) {
-                        serve_heat_call()
-                        return
-                    }
-                }
-                break
-        }
-        turn_off_heat()
-        // check for servable cooling call
-        switch ("$cool_type") {
-            case "Single stage":
-            case "Two stage":
-                if (state.cool_demand > 0) {
-                    if (state.cool_demand+state.off_capacity >= cfmY1) {
-                        if(now()-state.last_heating_stop >= mode_change_delay * 60 * 1000) {
-                            serve_cool_call()
-                            return
-                        }
-                    }
-                }
-                break
-        }
-    } else { // not in heating mode - cooling gets priority over heating
-        // check for servable cooling call
-        switch ("$cool_type") {
-            case "Single stage":
-            case "Two stage":
-                if (state.cool_demand > 0) {
-                    if (state.cool_demand+state.off_capacity >= cfmY1) {
-                        serve_cool_call()
-                        return
-                    }
-                }
-                break
-        }
-        turn_off_cool()
-       // check for servable heat call
-       switch ("$heat_type") {
-            case "Single stage":
-            case "Two stage":
-                if (state.heat_demand > 0) {
-                    if (state.heat_demand+state.off_capacity >= cfmW1) {
-                        if(now()-state.last_cooling_stop >= mode_change_delay * 60 * 1000) {
-                            serve_heat_call()
-                            return
-                        }
-                    }
-                }
-                break
-        }
+    // log.debug("cool_demand = $state.cool_demand, heat_demand = $state.heat_demand, fan_demand = $state.fan_demand, vent_demand = $state.vent_demand")
+    // this section updates the state and, in heating and cooling modes, selects the zones and equipment
+    switch ("$state.equip_state") {
+        case "Idle":
+            if (servable_heat_call()) {
+                start_heat_run()
+                return
+            } else if (servable_cool_call()) {
+                start_cool_run()
+                return
+            }
+            break
+        case "IdleH":
+            if (servable_heat_call()) {
+                start_heat_run()
+                return
+            }
+            break
+        case "PauseH":
+            break
+        case "Heating":
+            if (servable_heat_call()) {
+                update_heat_run()
+                return
+            } else {
+                end_heat_run()
+            }
+            break
+        case "HeatingL":
+            update_heat_run()
+            return
+        case "IdleC":
+            if (servable_cool_call()) {
+                start_cool_run()
+                return
+            }
+            break
+        case "PauseC":
+            break
+        case "Cooling":
+            if (servable_cool_call()) {
+                update_cool_run()
+                return
+            } else {
+                end_cool_run()
+            }
+            break
+        case "CoolingL":
+            update_cool_run()
+            return
     }
-    // if this point is reached, then there is no servable heating or cooling call, heating and cooling equipment are off
-    runIn(1, equipment_off_adjust_vent)
-    // re-calling zone_call_changed after mode_change_delay is causing extraneous call to equipment_off_adjust_vent but not causing a problem
-    // check for servable fan call
-    if (state.fan_demand+state.off_capacity >= cfmG) {
-        serve_fan_call()
-        return
-    } else {
-        turn_off_fan() // this function will not turn off the fan if it is needed for ventilation
+    if (status) {
+        status.setequipState("$state.equip_state")
+    }
+    // Not serving heating or cooling call, check whether fan should run
+    switch ("$state.equip_state") {
+        case "Idle":
+        case "IdleH":
+        case "PauseH":
+        case "IdleC":
+        case "PauseC":
+            update_fan_state()
+            update_fan_zones()
+            break
+        case "Heating":
+        case "HeatingL":
+        case "Cooling":
+        case "CoolingL":
+            log.debug("Should not have reached this point in zone_call_changed() in $state.equip_state state")
+            break
+    }
+}
+
+def equipment_state_timeout() {
+    switch ("$state.equip_state") {
+        case "Idle":
+            log.debug("timeout in Idle mode shouldn't happen")
+            break
+        case "IdleH":
+        case "IdleC":
+            state.equip_state = "Idle"
+            zone_call_changed()
+            break
+        case "PauseH":
+            if (mode_change_delay > heat_min_idletime) {
+                state.equip_state = "IdleH"
+                runIn((mode_change_delay-heat_min_idletime)*60, equipment_state_timeout) // this will cause a transition to Idle state at the right time 
+            } else {
+                state.equip_state = "Idle"
+            }
+            zone_call_changed()
+            break
+        case "PauseC":
+            if (mode_change_delay > cool_min_idletime) {
+                state.equip_state = "IdleC"
+                runIn((mode_change_delay-cool_min_idletime)*60, equipment_state_timeout) // this will cause a transition to Idle state at the right time 
+            } else {
+                state.equip_state = "Idle"
+            }
+            zone_call_changed()
+            break
+        case "Heating":
+            log.debug("timeout in Heating mode shouldn't happen")
+            break
+        case "HeatingL":
+            state.equip_state = "Heating"
+            zone_call_changed()
+            break
+        case "Cooling":
+            log.debug("timeout in Cooling mode shouldn't happen")
+            break
+        case "CoolingL":
+            state.equip_state = "Cooling"
+            break
+    }
+    if (status) {
+        status.setequipState("$state.equip_state")
     }
 }
 
 // Routines for handling heating
 
-def serve_heat_call() {
-    // log.debug("In serve_heat_call()")
-    state.heating_mode = true
+Boolean servable_heat_call() {
+    // check for servable heat call
+    switch ("$heat_type") {
+        case "Single stage":
+        case "Two stage":
+            if (state.heat_demand > 0) {
+                 if (state.heat_demand+state.off_capacity >= cfmW1) {
+                     return true;
+                 }
+            }
+    }
+    return false;
+}
+
+def start_heat_run() {
+    // log.debug("In start_heat_run()")
     // turn on zones with heat call and turn off others
     def zones = getChildApps()
     zones.each { z ->
@@ -485,74 +584,96 @@ def serve_heat_call() {
             z.turn_off()
         }
     }
-    turn_on_heat()
-}
-
-def turn_on_heat() {
-    // log.debug("In turn_on_heat()")
-    // check consistency with hardwired connection
-    switch("$state.wired_mode") {
-        case "cooling":
-            return
+    state.last_heating_start = now()
+    W1.on()
+    state.equip_state = "HeatingL"
+    if (status) {
+        status.setequipState("$state.equip_state")
     }
-    // turn on heating equipment if not already on
-    if (!state.heating_equipment_running) {
-        state.last_heating_start = now()
-        W1.on()
-        state.heating_equipment_running = true
-        runIn(1, equipment_on_adjust_vent) // this updates the ventilation state if necessary
-    }
+    runIn(1, equipment_on_adjust_vent) // this updates the ventilation state if necessary
+    runIn(heat_min_runtime*60, equipment_state_timeout) // this will cause a transition to Heating state at the right time 
     stage2_heat()
 }
 
 def stage2_heat() {
     // log.debug("In stage2_heat()")
-    if (!state.heating_equipment_running) {
-        return
-    }
-    switch ("$heat_type") {
-        case "Two stage":
-            if (state.heat_demand + state.off_capacity < cfmW2) {
-                W2.off()
-            } else if (now() - state.last_heating_start > heat_stage2_delay * 60 * 1000) {
-                W2.on()
-            } else {
-                W2.off()
-                Long time = (heat_stage2_delay * 60 - (now() - state.last_heating_start) / 1000)
-                runIn(time, stage2_heat) // re-check when it has been long enough
-                def zones = getChildApps()
-                zones.each { z ->
-                    if (z.get_heat_demand() > 0) {
-                        if (z.get_heat_setpoint() - z.get_temp() >= heat_stage2_deltat) {
-                            W2.on()
-                            return
+    switch ("$state.equip_state") {
+        case "Heating":
+        case "HeatingL":
+            switch ("$heat_type") {
+                case "Two stage":
+                    if (state.heat_demand + state.off_capacity < cfmW2) {
+                        W2.off()
+                    } else if (now() - state.last_heating_start > heat_stage2_delay * 60 * 1000) {
+                        W2.on()
+                    } else {
+                        Long time = (heat_stage2_delay * 60 - (now() - state.last_heating_start) / 1000)
+                        runIn(time, stage2_heat) // re-check when it has been long enough
+                        def zones = getChildApps()
+                        zones.each { z ->
+                            if (z.get_heat_demand() > 0) {
+                                if (z.get_heat_setpoint() - z.get_temp() >= heat_stage2_deltat) {
+                                    W2.on()
+                                    return
+                                }
+                            }
                         }
+                        W2.off()
                     }
-                }
             }
+            break
     }
 }
 
-def turn_off_heat() {
-    // log.debug("In turn_off_heat()")
-    if (state.heating_equipment_running) {
-        state.last_heating_stop = now()
-        switch ("$heat_type") {
-            case "Two stage":
-                W2.off()
-            case "Single stage":
-                W1.off()
+def update_heat_run() {
+    // log.debug("In update_heat_run()")
+    // TO DO: in HeatingL Mode, turn on zones with heat call and enough others to exceed the low stage heating airflow
+    // In Heating Mode, turn on zones with heat call and turn off others
+    def zones = getChildApps()
+    zones.each { z ->
+        if (z.get_heat_demand() > 0) {
+            z.turn_on("heating")
+        } else {
+            z.turn_off()
         }
-        state.heating_equipment_running = false
-        runIn(60 * mode_change_delay, zone_call_changed) // this makes sure that a cooling call that may be waiting gets served
     }
+}
+
+def end_heat_run() {
+    // log.debug("In end_heat_run()")
+    state.last_heating_stop = now()
+    switch ("$heat_type") {
+        case "Two stage":
+            W2.off()
+        case "Single stage":
+            W1.off()
+    }
+    state.equip_state = "PauseH"
+    if (status) {
+        status.setequipState("$state.equip_state")
+    }
+    runIn(1, equipment_off_adjust_vent) // this updates the ventilation state if necessary
+    runIn(heat_min_idletime*60, equipment_state_timeout) // this will cause a transition to IdleH state at the right time 
 }
 
 // Routines for handling cooling
 
-def serve_cool_call() {
-    // log.debug("In serve_cool_call()")
-    state.heating_mode = false
+Boolean servable_cool_call() {
+    // check for servable cooling call
+    switch ("$cool_type") {
+        case "Single stage":
+        case "Two stage":
+            if (state.cool_demand > 0) {
+                 if (state.cool_demand+state.off_capacity >= cfmY1) {
+                     return true;
+                 }
+            }
+    }
+    return false;
+}
+
+def start_cool_run() {
+    // log.debug("In start_cool_run()")
     // turn on zones with cooling call and turn off others
     def zones = getChildApps()
     zones.each { z ->
@@ -562,104 +683,164 @@ def serve_cool_call() {
             z.turn_off()
         }
     }
-    turn_on_cool()
-}
-
-def turn_on_cool() {
-    // log.debug("In turn_on_cool()")
-    // check consistency with hardwired connection
-    switch("$state.wired_mode") {
-        case "heating":
-            return
+    state.last_cooling_start = now()
+    Y1.on()
+    switch_on_fan()
+    state.equip_state = "CoolingL"
+    if (status) {
+        status.setequipState("$state.equip_state")
     }
-    // turn on cooling equipment if not already on
-    if (!state.cooling_equipment_running) {
-        state.last_cooling_start = now()
-        switch_fan_on()
-        Y1.on()
-        state.cooling_equipment_running = true
-        runIn(1, equipment_on_adjust_vent)
-    }
+    runIn(1, equipment_on_adjust_vent) // this updates the ventilation state if necessary
+    runIn(cool_min_runtime*60, equipment_state_timeout) // this will cause a transition to Cooling state at the right time 
     stage2_cool()
 }
 
 def stage2_cool() {
     // log.debug("In stage2_cool()")
-    if (!state.cooling_equipment_running) {
-        return
-    }
-    switch ("$cool_type") {
-        case "Two stage":
-            if (state.cool_demand + state.off_capacity < cfmY2) {
-                Y2.off()
-            } else if (now() - state.last_cooling_start > cool_stage2_delay * 60 * 1000) {
-                Y2.on()
-            } else {
-                Y2.off()
-                Long time = (cool_stage2_delay * 60 - (now() - state.last_cooling_start) / 1000)
-                runIn(time, stage2_cool) // re-check when it has been long enough
-                def zones = getChildApps()
-                zones.each { z ->
-                    if (z.get_cool_demand() > 0) {
-                        if (z.get_temp() - z.get_cool_setpoint() >= cool_stage2_deltat) {
-                            Y2.on()
-                            return
+    switch ("$state.equip_state") {
+        case "Cooling":
+        case "CoolingL":
+            switch ("$cool_type") {
+                case "Two stage":
+                    if (state.cool_demand + state.off_capacity < cfmY2) {
+                        Y2.off()
+                    } else if (now() - state.last_cooling_start > cool_stage2_delay * 60 * 1000) {
+                        Y2.on()
+                    } else {
+                        Long time = (cool_stage2_delay * 60 - (now() - state.last_cooling_start) / 1000)
+                        runIn(time, stage2_cool) // re-check when it has been long enough
+                        def zones = getChildApps()
+                        zones.each { z ->
+                            if (z.get_cool_demand() > 0) {
+                                if (z.get_temp() - z.get_cool_setpoint() >= cool_stage2_deltat) {
+                                    Y2.on()
+                                    return
+                                }
+                            }
                         }
+                        Y2.off()
                     }
-                }
             }
+            break
     }
 }
 
-def turn_off_cool() {
-    // log.debug("In turn_off_cool()")
-    if (state.cooling_equipment_running) {
-        state.last_cooling_stop = now()
-        switch ("$cool_type") {
-            case "Two stage":
-                Y2.off()
-            case "Single stage":
-                Y1.off()
+def update_cool_run() {
+    // log.debug("In update_cool_run()")
+    // TO DO: in CoolingL Mode, turn on zones with cooling call and enough others to exceed the low stage cooling airflow
+    // In Cooling Mode, turn on zones with cool call and turn off others
+    def zones = getChildApps()
+    zones.each { z ->
+        if (z.get_cool_demand() > 0) {
+            z.turn_on("cooling")
+        } else {
+            z.turn_off()
         }
-        if (!state.fan_running_by_request) {
-            turn_off_fan()
-        }
-        state.cooling_equipment_running = false
-        runIn(60 * mode_change_delay, zone_call_changed)
     }
+}
+
+def end_cool_run() {
+    // log.debug("In end_cool_run()")
+    state.last_cooling_stop = now()
+    switch ("$cool_type") {
+        case "Two stage":
+            Y2.off()
+        case "Single stage":
+            Y1.off()
+    }
+    state.equip_state = "PauseC"
+    if (status) {
+        status.setequipState("$state.equip_state")
+    }
+    runIn(1, equipment_off_adjust_vent) // this updates the ventilation state if necessary
+    runIn(cool_min_idletime*60, equipment_state_timeout) // this will cause a transition to IdleC state at the right time 
 }
 
 // Routines for handling fan only commands
 
-def serve_fan_call() {
-    // log.debug("In serve_fan_call()")
-    // turn on proper zones and turn off others
+def update_fan_state() {
+    // log.debug("In update_fan_state()")
+    switch ("$state.equip_state") {
+        case "Idle":
+        case "IdleH":
+        case "PauseH":
+        case "IdleC":
+        case "PauseC":
+            if ("$vent_type" == "Requires Blower") {
+                switch ("$state.vent_state") {
+                    case "Forced":
+                    case "End_Phase":
+                    case "Running":
+                    state.fan_state = "On_for_vent"
+                    return
+                }
+            }
+            if (state.fan_demand > 0) {
+                 if (state.fan_demand+state.off_capacity >= cfmG) {
+                     state.fan_state = "On_by_request"
+                     return
+                 }
+            }
+            state.fan_state = "Off"
+            return
+        case "Heating":
+        case "HeatingL":
+            // leave fan_state wherever it was when heating equipment is running
+            return
+        case "Cooling":
+        case "CoolingL":
+            state.fan_state = "On_for_cooling"
+            return
+    }
+}
+
+def update_fan_zones() {
+    // log.debug("In update_fan_zones()")
+    // select the correct zones and turn the fan on or off if needed
+    switch ("$state.equip_state") {
+        case "Heating":
+        case "HeatingL":
+            // don't update zones or fan command during heating call 
+            return
+    }
     def zones = getChildApps()
-    if ("$vent_type" == "Requires Blower") {
-        switch ("$state.vent_state") {
-            case "Forced":
-            case "End_Phase":
-            case "Running":
-                // blower is already on serving ventilation, open zones with either fan call or vent call
+    switch ("$state.fan_state") {
+        case "On_for_cooling":
+            switch_fan_on()
+            break
+        case "On_for_vent": 
+            if (state.vent_demand >= cdfG) {
                 zones.each { z ->
-                    if ((z.get_fan_demand() > 0) || (z.get_vent_demand() > 0)) {
+                    if (z.get_vent_demand() > 0) {
                         z.turn_on("fan only")
                     } else {
                         z.turn_off()
                     }
                 }
-                return
-        }
+            } else {
+                zones.each { z ->
+                    z.turn_on("fan only")
+                }
+            }
+            switch_fan_on()
+            break
+        case "On_by_request":
+            zones.each { z ->
+                if (z.get_fan_demand() > 0) {
+                    z.turn_on("fan only")
+                } else {
+                    z.turn_off()
+                }
+            }
+            switch_fan_on()
+            break
+        case "Off":
+            zones.each { z ->
+                z.turn_idle()
+            }
+            switch_fan_off()
+            break
     }
-    // blower is not already serving ventilation, open only zones with fan call and then turn on blower
-    zones.each { z ->
-        if (z.get_fan_demand() > 0) {
-            z.turn_on("fan only")
-        } else {
-            z.turn_off()
-        }
-    }
-    turn_on_fan()
 }
 
 // switch_fan_on() and switch_fan_off change either the fan switch or the wired thermostat
@@ -682,113 +863,11 @@ def switch_fan_off() {
     }
 }
 
-// turn_on_fan() and turn_off_fan() are called when fan is requested from a manual change to a thermostat
-// turn_fan_off() is also called to turn off the fan, if appropriate, at the end of a cooling call
-// they should not be called to turn on the fan for ventilation
-
-def turn_on_fan() {
-    // log.debug("In turn_on_fan()")
-    state.fan_running_by_request = true;
-    switch_fan_on()
-}
-
-def turn_off_fan() {
-    // log.debug("In turn_off_fan()")
-    state.fan_running_by_request = false;
-    if ("$vent_type" != "Requires Blower") {
-        switch_fan_off()
-        return
-    }
-    switch ("$state.vent_state") {
-        case "Complete":
-        case "Off":
-        case "Waiting":
-            switch_fan_off()
-            break
-        case "Forced":
-        case "End_Phase":
-        case "Running":
-            // in these states, leave fan on because it is needed for ventilation
-            break
-    }
-}
-
 // Ventilation Control Routines
 // The ventilation functionality runs ventilation for a specified fraction of each hour.  The function start_vent_interval gets called at the beginning
 // of each interval.  Ventilation can be turned off.  Ventilation can also be forced to run.
-// The variable state.vent_runtime represents the number of minutes that is still needed in the current interval.  stat.vent_runtime is
+// The variable state.vent_runtime represents the number of minutes that is still needed in the current interval.  state.vent_runtime is
 // updated during changes (not continuously).
-// The variable state.vent_state indicates the current state.  Possible values are:
-// "Off": which means that the user has turned ventilation off
-// "Forced": which means that the user has forced ventilation to run, regardless of equipment state of how much it has already run recently
-// "Waiting": which means ventilation has not yet run enough during the present interval, but the app is waiting for equipment to run so
-// that ventilation can be done during a cooling or heating call.  In this state, a call to vent_deadline_reached() is scheduled for when
-// ventilation should start even if there is no heating or cooling call.
-// "Complete": which means ventilation has already run enough during the present interval
-// "Running": which means ventilation is running during a heating or cooling call.  In this state, a call to vent_runtime_reached() is scheduled
-// for when ventilation will have run enough in this interval and should be stopped even if the heating or cooling call continues.
-// "End_Phase": which means that ventilation needs to run for the remainder of the interval in order to run enough during the present interval
-
-
-def turn_on_vent() {  
-    // log.debug("In turn_on_vent()")
-    // this function is only called when ventilation requires the blower
-    switch ("$vent_type") {
-        case "Doesn't Require Blower":
-        case "None":
-            log.debug("*** turn_on_vent() should only be called if ventilation requires the blower")
-    }
-    switch ("$state.vent_state") {
-        case "Complete":
-        case "Off":
-        case "Waiting":
-            log.debug("turn_on_vent() should not have been called in $state.vent_state state")
-            return
-        case "Running":
-            break // do not adjust zone selection
-        case "Forced":
-            if (state.heating_equipment_running || state.cooling_equipment_running) {
-                break // do not adjust zone selection
-            }
-        case "End_Phase":
-            // turn on zones
-            def zones = getChildApps()
-            if (state.vent_demand+state.off_capacity >= cfmG) {
-                // demand is high enough with only zones calling for vent and fan
-                zones.each { z ->
-                    if (z.get_on_for_vent()  || z.get_fan_demand()) {
-                         z.turn_on("vent")
-                    } else {
-                         z.turn_off()
-                    }
-                }
-            } else {
-                // not enough capacity in zones calling for vent, so turn on all zones
-                zones.each { z ->
-                    z.turn_on("vent")
-                }
-            }
-    }
-    V.on()
-    switch_fan_on()
-}
-
-def turn_off_vent() {
-    // log.debug("In turn_off_vent")
-    V.off()
-    if (state.heating_equipment_running || state.cooling_equipment_running) {
-        return
-    }
-    if (state.fan_running_by_request) {
-        serve_fan_call()
-    } else {
-        switch_fan_off()
-        def zones = getChildApps()
-        zones.each { z ->
-            z.turn_idle()
-        }
-    }
-}
 
 def start_vent_interval() {
     // log.debug("In start_vent_interval()")
@@ -815,19 +894,29 @@ def start_vent_interval() {
             runIn(state.vent_runtime, vent_runtime_reached)
             break;
         case "Requires Blower":
-            if(state.heating_equipment_running || state.cooling_equipment_running) {
-                state.vent_started = now()
-                // log.debug("vent on - Running")
-                state.vent_state = "Running"
-                turn_on_vent()
-                runIn(state.vent_runtime, vent_runtime_reached)
-            } else {
-                // log.debug("vent off - Waiting")
-                state.vent_state = "Waiting"
-                turn_off_vent()
-                runIn(60 * 60 - state.vent_runtime, vent_deadline_reached)
+            switch ("$state.equip_state") {
+                case "Idle":
+                case "IdleH":
+                case "PauseH":
+                case "IdleC":
+                case "PauseC":
+                    // log.debug("vent off - Waiting")
+                    state.vent_state = "Waiting"
+                    update_fan_state()
+                    update_fan_zones()
+                    runIn(60 * 60 - state.vent_runtime, vent_deadline_reached)
+                    return
+                case "Heating":
+                case "HeatingL":
+                case "Cooling":
+                case "CoolingL":
+                    state.vent_started = now()
+                    // log.debug("vent on - Running")
+                    state.vent_state = "Running"
+                    V.on()
+                    runIn(state.vent_runtime, vent_runtime_reached)
+                    return
             }
-            break;
     }
     if (status) {
         status.setventState("$state.vent_state")
@@ -859,12 +948,12 @@ def vent_force_activated(evt=NULL) {
     state.vent_runtime = runtime
     state.vent_state = "Forced"
     state.vent_started = now()
+    V.on()
     switch ("$vent_type") {
         case "Requires Blower":
-            turn_on_vent()
+            update_fan_state()
+            update_fan_zones()
             break
-        case "Doesn't Require Blower":
-            V.on()
     }
     if (status) {
         status.setventState("$state.vent_state")
@@ -892,7 +981,12 @@ def vent_force_deactivated(evt=NULL) {
         if (state.vent_runtime <= 0) {
             // log.debug("vent off - Complete")
             state.vent_state = "Complete"
-            turn_off_vent()
+            V.off()
+            switch ("$vent_type") {
+                case "Requires Blower":
+                    update_fan_state()
+                    update_fan_zones()
+            }
         } else {
             switch ("$vent_type") {
                 case "Doesn't Require Blower":
@@ -902,18 +996,28 @@ def vent_force_deactivated(evt=NULL) {
                     runIn(state.vent_runtime, vent_runtime_reached)
                     break;
                 case "Requires Blower":
-                    if(state.heating_equipment_running || state.cooling_equipment_running) {
-                        // log.debug("vent on - Running")
-                        state.vent_started = now()
-                        state.vent_state = "Running"
-                        turn_on_vent()
-                        runIn(state.vent_runtime, vent_runtime_reached)
-                    } else {
-                        // log.debug("vent off - Waiting")
-                        state.vent_state = "Waiting"
-                        turn_off_vent()
-                        Integer deadline = (state.vent_interval_end - now()) / 1000 - state.vent_runtime
-                        runIn(deadline, vent_deadline_reached)
+                    switch ("$state.equip_state") {
+                        case "Idle":
+                        case "IdleH":
+                        case "PauseH":
+                        case "IdleC":
+                        case "PauseC":
+                            // log.debug("vent off - Waiting")
+                            state.vent_state = "Waiting"
+                            V.off()
+                            update_fan_state()
+                            update_fan_zones()
+                            Integer deadline = (state.vent_interval_end - now()) / 1000 - state.vent_runtime
+                            runIn(deadline, vent_deadline_reached)
+                            break
+                        case "Heating":
+                        case "HeatingL":
+                        case "Cooling":
+                        case "CoolingL":
+                            // log.debug("vent on - Running")
+                            state.vent_started = now()
+                            state.vent_state = "Running"
+                            runIn(state.vent_runtime, vent_runtime_reached)
                     }
                     break;
             }
@@ -921,7 +1025,12 @@ def vent_force_deactivated(evt=NULL) {
     } else {
         // log.debug("vent off - Off")
         state.vent_state = "Off"
-        turn_off_vent()
+        V.off()
+        switch ("$vent_type") {
+            case "Requires Blower":
+                update_fan_state()
+                update_fan_zones()
+        }
     }
     if (status) {
         status.setventState("$state.vent_state")
@@ -952,7 +1061,12 @@ def vent_control_deactivated(evt=NULL) {
         // log.debug("Still in forced vent state")
     } else {
         state.vent_state = "Off"
-        turn_off_vent()
+        V.off()
+        switch ("$vent_type") {
+            case "Requires Blower":
+                update_fan_state()
+                update_fan_zones()
+        }
     }
     if (status) {
         status.setventState("$state.vent_state")
@@ -962,7 +1076,12 @@ def vent_control_deactivated(evt=NULL) {
 def vent_runtime_reached() {
     // log.debug("In vent_runtime_reached()")
     state.vent_state = "Complete"
-    turn_off_vent()
+    V.off()
+    switch ("$vent_type") {
+        case "Requires Blower":
+            update_fan_state()
+            update_fan_zones()
+    }
     if (status) {
         status.setventState("$state.vent_state")
     }
@@ -971,7 +1090,12 @@ def vent_runtime_reached() {
 def vent_deadline_reached() {
     // log.debug("In vent_deadline_reached()")
     state.vent_state = "End_Phase"
-    turn_on_vent()
+    V.on()
+    switch ("$vent_type") {
+        case "Requires Blower":
+            update_fan_state()
+            update_fan_zones()
+    }
     if (status) {
         status.setventState("$state.vent_state")
     }
@@ -982,33 +1106,33 @@ def equipment_off_adjust_vent() {
     // it may also be called while equipment is off, such as extraneous call from mode_change_delay
     // it should not be called with equipment on, although the blower may be on serving a fan only call
     // log.debug("In equipment_off_adjust_vent()")
-    if(state.heating_equipment_running || state.cooling_equipment_running) {
-        log.debug("*** equipment_off_adjust_vent() should not be called with equipment running")
+    switch ("$state.equip_state") {
+        case "Heating":
+        case "HeatingL":
+        case "Cooling":
+        case "CoolingL":
+            log.debug("*** equipment_off_adjust_vent() should not be called with equipment running")
+            return
     }
     switch ("$vent_type") {
         case "Doesn't Require Blower":
         case "None":
+            return
         case "Requires Blower":
             switch ("$state.vent_state") {
                 case "Complete":
                 case "Waiting":
                 case "Off":
-                    if (!state.fan_running_by_request) {
-                       def zones = getChildApps()
-                       zones.each { z ->
-                            z.turn_idle()
-                        }
-                    }
-                    break
                 case "End_Phase":
                 case "Forced":
-                    turn_on_vent() // may already be on, but this adjusts the zone selections correctly
                     break;
                 case "Running":
                     // log.debug("vent off - Waiting")
                     state.vent_state = "Waiting"
                     unschedule(vent_runtime_reached)
-                    turn_off_vent()
+                    V.off()
+                    update_fan_state()
+                    update_fan_zones()
                     Integer runtime = state.vent_runtime - (now() - state.vent_started) / 1000
                     state.vent_runtime = runtime
                     // log.debug("runtime is $state.vent_runtime")
@@ -1042,7 +1166,8 @@ def equipment_on_adjust_vent() {
                     state.vent_state = "Running"
                     state.vent_started = now()
                     unschedule(vent_deadline_reached)
-                    turn_on_vent()
+                    V.on()
+                    update_fan_state()
                     runIn(state.vent_runtime, vent_runtime_reached)
                     break;
             }
@@ -1068,28 +1193,33 @@ def over_pressure_stage1(evt=NULL) {
         z.handle_overpressure()
     }
     child_updated()
-    if (heat_mode) {
-        switch ("$heat_type") {
-            case "Two stage":
-                def currentvalue = W2.currentValue("switch")
-                switch ("$currentvalue") {
-                    case "on":
-                    W2.off()
-                    runIn(60, over_pressure_stage2)
-                    return
-                }
-        }
-    } else {
-        switch ("$cool_type") {
-            case "Two stage":
-                def currentvalue = Y2.currentValue("switch")
-                switch ("$currentvalue") {
-                    case "on":
-                    Y2.off()
-                    runIn(60, over_pressure_stage2)
-                    return
-                }
-        }
+    switch ("$state.equip_state") {
+        case "Heating":
+        case "HeatingL":
+            switch ("$heat_type") {
+                case "Two stage":
+                    def currentvalue = W2.currentValue("switch")
+                    switch ("$currentvalue") {
+                        case "on":
+                        W2.off()
+                        runIn(60, over_pressure_stage2)
+                        return
+                    }
+            }
+            break
+        case "Cooling":
+        case "CoolingL":
+            switch ("$cool_type") {
+                case "Two stage":
+                    def currentvalue = Y2.currentValue("switch")
+                    switch ("$currentvalue") {
+                        case "on":
+                        Y2.off()
+                        runIn(60, over_pressure_stage2)
+                        return
+                    }
+            }
+            break
     }
     over_pressure_stage2()
 }
@@ -1108,14 +1238,25 @@ def over_pressure_stage2() {
 }
 
 def get_equipment_status() {
-    if (heating_equipment_running) {
-        return "heating"
-    } else if (cooling_equipment_running) {
-        return "cooling"
-    } else if (fan_running_by_request) {
-        return "fan only"
-    } else {
-        // need to adjust to handle vent_state
-        return "idle"
+    switch ("$state.equip_state") {
+        case "Idle":
+        case "IdleH":
+        case "PauseH":
+        case "IdleC":
+        case "PauseC":
+            switch ("$state.fan_state") {
+                case "On_for_cooling":
+                case "On_for_vent": 
+                case "On_by_request":
+                    return "fan only"
+                case "Off":
+                    return "idle"
+            }
+        case "Heating":
+        case "HeatingL":
+            return "heating"
+        case "Cooling":
+        case "CoolingL":
+            return "cooling"
     }
 }
