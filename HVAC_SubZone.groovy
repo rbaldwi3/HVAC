@@ -13,6 +13,7 @@
  *  for the specific language governing permissions and limitations under the License.
  *
  * version 0.1 - Initial Release
+ * version 0.2 -
  */
 
 definition(
@@ -26,7 +27,6 @@ definition(
     iconX2Url: "",
     iconX3Url: ""
 )
-
 
 preferences {
     section ("Temperature and Set point - Specify either a thermostat or a temperatures sensor and offsets from the parent zone setpoints") {
@@ -92,16 +92,16 @@ def initialize() {
         atomicState.heat_setpoint = levelstate.value as BigDecimal
         levelstate = stat.currentState("coolingSetpoint")
         atomicState.cool_setpoint = levelstate.value as BigDecimal
-    } else if (temp_sensor) {
+    } else if (temp_sensor && parent.full_thermpostat()) {
         def levelstate = temp_sensor.currentState("temperature")
         atomicState.temperature = levelstate.value as BigDecimal
         atomicState.heat_setpoint = parent.get_heat_setpoint() + settings.heat_offset
         atomicState.cool_setpoint = parent.get_cool_setpoint() + settings.cool_offset
     } else {
         log.error("Neither Thermostat nor Temperature Sensor specified")
-        atomicState.heat_setpoint = 68.5
-        atomicState.cool_setpoint = 78.5
-        atomicState.temperature = 74.0
+        atomicState.heat_setpoint = 70.0
+        atomicState.cool_setpoint = 80.0
+        atomicState.temperature = 75.0
     }
     if (fan_switch) {
         def currentvalue = fan_switch.currentValue("switch")
@@ -268,6 +268,37 @@ def get_heat_demand(parent_mode, parent_setpoint, parent_temp ) {
     return 0;
 }
 
+def get_heat_demand(parent_mode) {
+    // log.debug("In SubZone get_heat_demand($parent_mode)")
+    switch (parent_mode) {
+        case "heating":
+            switch ("$heat_join") {
+                case "Only during subzone heating call":
+                    def state = stat.currentValue("thermostatOperatingState")
+                    switch ("$state") {
+                        case "heating":
+                            return atomicState.on_capacity
+                        default:
+                            return 0
+                    }
+                case "When subzone temp is less than setpoint":
+                    if (atomicState.temperature <= atomicState.heat_setpoint) {
+                        return atomicState.on_capacity
+                    } else {
+                       return 0
+                    }
+                case "When subzone temp is no more than 1 degree above setpoint":
+                    if (atomicState.temperature - 1 <= atomicState.heat_setpoint) {
+                        return atomicState.on_capacity
+                    } else {
+                       return 0
+                    }
+            }
+            break;
+    }
+    return 0;
+}
+
 def get_cool_demand(parent_mode, parent_setpoint, parent_temp ) {
     // log.debug("In SubZone get_cool_demand($parent_mode, $parent_setpoint, $parent_temp)")
     switch (parent_mode) {
@@ -319,6 +350,37 @@ def get_cool_demand(parent_mode, parent_setpoint, parent_temp ) {
                     }
                 case "When parent zone temp no more than 1 degree below setpoint":
                     if (temperature + 1 >= setpoint) {
+                        return atomicState.on_capacity
+                    } else {
+                       return 0
+                    }
+            }
+            break;
+    }
+    return 0;
+}
+
+def get_cool_demand(parent_mode) {
+    // log.debug("In SubZone get_cool_demand($parent_mode)")
+    switch (parent_mode) {
+        case "cooling":
+            switch ("$cool_join") {
+                case "Only during subzone cooling call":
+                    def state = stat.currentValue("thermostatOperatingState")
+                    switch ("$state") {
+                        case "cooling":
+                            return atomicState.on_capacity
+                        default:
+                            return 0
+                    }
+                case "When subzone temp is greater than setpoint":
+                    if (atomicState.temperature >= atomicState.cool_setpoint) {
+                        return atomicState.on_capacity
+                    } else {
+                       return 0
+                    }
+                case "When subzone temp is no more than 1 degree below setpoint":
+                    if (atomicState.temperature + 1 >= atomicState.cool_setpoint) {
                         return atomicState.on_capacity
                     } else {
                        return 0
