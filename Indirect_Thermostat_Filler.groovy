@@ -19,7 +19,7 @@ definition(
     name: "Indirect Thermostat Filler",
     namespace: "rbaldwi3",
     author: "Reid Baldwin",
-    description: "This app transfers the state of thermostat sensors to a device that implements ThermostatOperatingState",
+    description: "This app transfers the state of thermostat sensors to a device that accepts raw heating and cooling calls",
     category: "General",
     iconUrl: "",
     iconX2Url: "",
@@ -28,10 +28,11 @@ definition(
 
 preferences {
     section ("Devices") {
-        input "stat", "device.IndirectThermostat", required: true, title: "Indirect Thermostat"
+        input "stat", "device.HVACZoningStatus", required: true, title: "Indirect Thermostat"
         input "heat", "capability.contactSensor", required: false, title: "Heating Call"
         input "cool", "capability.contactSensor", required: false, title: "Cooling Call"
         input "fan", "capability.contactSensor", required: false, title: "Fan Call"
+        input "temperature", "capability.temperatureMeasurement", required: false, title: "Temperature Source"
     }
 }
 
@@ -55,6 +56,16 @@ def initialize() {
     if (fan) {
         subscribe(fan, "contact", callHandler)
     }
+    if (temperature) {
+        subscribe(temperature, "temperature", tempHandler)
+    }
+}
+
+def tempHandler(evt=NULL) {
+    log.debug("In tempHandler()")
+    def state = temperature.currentState("temperature")
+    new_temp = state.value as BigDecimal
+    stat.setTemperature(new_temp)
 }
 
 def callHandler(evt=NULL) {
