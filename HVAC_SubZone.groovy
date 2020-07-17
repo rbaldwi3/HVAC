@@ -29,37 +29,56 @@ definition(
 )
 
 preferences {
-    section ("Temperature and Set point - Specify either a thermostat or a temperatures sensor and offsets from the parent zone setpoints") {
-        input "stat", "capability.thermostat", required: false, title: "Thermostat"
-        input "temp_sensor", "capability.temperatureMeasurement", required: false, title: "Temperature Sensor"
-        input "heat_offset", "number", required: false, title: "Heating Setpoint Offset from Parent Zone", default: 0, range: "-10 . . 10"
-        input "cool_offset", "number", required: false, title: "Cooling Setpoint Offset from Parent Zone", default: 0, range: "-10 . . 10"
+    page(name: "pageOne", nextPage: "pageTwo", uninstall: true) {
+        section ("Zone Data") {
+            label required: true, multiple: false
+            input "cfm", "number", required: true, title: "Maximum airflow for Zone", range: "200 . . 3000"
+            input "closed_pos", "number", required: true, title: "Percent Open when in Off position", default: 0, range: "0 . . 100"
+            input "zone", "capability.switch", required: true, title: "Selection of Zone" // future feature - percentage control as opposed to on/off
+            input "normally_open", "bool", required: true, title: "Normally Open (i.e. Switch On = Zone Inactive, Switch Off = Zone Selected)", default: false
+        }
     }
-    section ("Zone Data") {
-        input "cfm", "number", required: true, title: "Maximum airflow for Zone", range: "200 . . 3000"
-        input "closed_pos", "number", required: true, title: "Percent Open when in Off position", default: 0, range: "0 . . 100"
-        input "zone", "capability.switch", required: true, title: "Selection of Zone" // future feature - percentage control as opposed to on/off
-        input "normally_open", "bool", required: true, title: "Normally Open (i.e. Switch On = Zone Inactive, Switch Off = Zone Selected)", default: false
-        // time interval for polling in case any signals missed
-        input(name:"output_refresh_interval", type:"enum", required: true, title: "Output refresh", options: ["None","Every 5 minutes","Every 10 minutes",
-                                                                                                             "Every 15 minutes","Every 30 minutes"]) 
-        input(name:"input_refresh_interval", type:"enum", required: true, title: "Input refresh", options: ["None","Every 5 minutes","Every 10 minutes",
-                                                                                                             "Every 15 minutes","Every 30 minutes"]) 
-    }
-    section ("Control Rules") {
-        input (name:"heat_join", type: "enum", required: true, title: "Select during parent zone heating call", options: ["Only during subzone heating call",
-                                                                                                                    "When subzone temp is less than setpoint",
-                                                                                                                    "When subzone temp is no more than 1 degree above setpoint"])
-        input (name: "heat_trigger", type: "enum", required: true, title: "Subzone triggers parent zone heating call", options: ["Never", "Always",
-                                                                                              "When parent zone temp is less than setpoint",
-                                                                            "When parent zone temp is no more than 1 degree above setpoint"])
-        input (name:"cool_join", type: "enum", required: true, title: "Select during parent zone cooling call", options: ["Only during subzone cooling call",
-                                                                                                                    "When subzone temp is greater than setpoint",
-                                                                                                                    "When subzone temp is no more than 1 degree below setpoint"])
-        input (name:"cool_trigger", type: "enum", required: true, title: "Subzone triggers parent zone heating call", options: ["Never", "Always",
-                                                                                           "When parent zone temp is greater than setpoint",
-                                                                               "When parent zone temp no more than 1 degree below setpoint"])
-        input "fan_switch", "capability.switch", required: false, title: "Switch to select whether subzone is selected during parent fan only call (including ventilation)"
+    page(name: "pageTwo", title: "Control Rules", install: true, uninstall: true)
+}
+
+def pageTwo() {
+    dynamicPage(name: "pageTwo") {
+        if (tstat) {
+            section ("Temperature and Set point - Specify either a thermostat or a temperatures sensor and offsets from the parent zone setpoints") {
+                input "stat", "capability.thermostat", required: true, title: "Thermostat", submitOnChange: true
+                input "temp_sensor", "capability.temperatureMeasurement", required: false, title: "Temperature Sensor", submitOnChange: true
+                input "heat_offset", "number", required: false, title: "Heating Setpoint Offset from Parent Zone", default: 0, range: "-10 . . 10", submitOnChange: true
+                input "cool_offset", "number", required: false, title: "Cooling Setpoint Offset from Parent Zone", default: 0, range: "-10 . . 10", submitOnChange: true
+            }
+        } else {
+            section ("Temperature and Set point - Specify either a thermostat or a temperatures sensor and offsets from the parent zone setpoints") {
+                input "stat", "capability.thermostat", required: false, title: "Thermostat", submitOnChange: true
+                input "temp_sensor", "capability.temperatureMeasurement", required: true, title: "Temperature Sensor", submitOnChange: true
+                input "heat_offset", "number", required: true, title: "Heating Setpoint Offset from Parent Zone", default: 0, range: "-10 . . 10", submitOnChange: true
+                input "cool_offset", "number", required: true, title: "Cooling Setpoint Offset from Parent Zone", default: 0, range: "-10 . . 10", submitOnChange: true
+            }
+        }
+        section ("Control Rules") {
+            if (ttat) {
+                input (name:"heat_join", type: "enum", required: true, title: "Select during parent zone heating call", options: ["Only during subzone heating call",
+                                                                                                                            "When subzone temp is less than setpoint",
+                                                                                                                            "When subzone temp is no more than 1 degree above setpoint"])
+                input (name:"cool_join", type: "enum", required: true, title: "Select during parent zone cooling call", options: ["Only during subzone cooling call",
+                                                                                                                            "When subzone temp is greater than setpoint",
+                                                                                                                            "When subzone temp is no more than 1 degree below setpoint"])
+            } else {
+                input (name:"heat_join", type: "enum", required: true, title: "Select during parent zone heating call", options: ["When subzone temp is less than setpoint",
+                                                                                                                            "When subzone temp is no more than 1 degree above setpoint"])
+                input (name:"cool_join", type: "enum", required: true, title: "Select during parent zone cooling call", options: ["When subzone temp is greater than setpoint",
+                                                                                                                            "When subzone temp is no more than 1 degree below setpoint"])
+            }
+            input "fan_switch", "capability.switch", required: false, title: "Switch to select whether subzone is selected during parent fan only call (including ventilation)"
+            // time interval for polling in case any signals missed
+            input(name:"output_refresh_interval", type:"enum", required: true, title: "Output refresh", options: ["None","Every 5 minutes","Every 10 minutes",
+                                                                                                                 "Every 15 minutes","Every 30 minutes"]) 
+            input(name:"input_refresh_interval", type:"enum", required: true, title: "Input refresh", options: ["None","Every 5 minutes","Every 10 minutes",
+                                                                                                                 "Every 15 minutes","Every 30 minutes"]) 
+        }
     }
 }
 
@@ -207,67 +226,6 @@ def refresh_inputs() {
     }
 }
 
-def get_heat_demand(parent_mode, parent_setpoint, parent_temp ) {
-    // log.debug("In SubZone get_heat_demand($parent_mode, $parent_setpoint, $parent_temp)")
-    switch (parent_mode) {
-        case "heating":
-            switch ("$heat_join") {
-                case "Only during subzone heating call":
-                    def state = stat.currentValue("thermostatOperatingState")
-                    switch ("$state") {
-                        case "heating":
-                            return atomicState.on_capacity
-                        default:
-                            return 0
-                    }
-                case "When subzone temp is less than setpoint":
-                    if (atomicState.temperature <= atomicState.heat_setpoint) {
-                        return atomicState.on_capacity
-                    } else {
-                       return 0
-                    }
-                case "When subzone temp is no more than 1 degree above setpoint":
-                    if (atomicState.temperature - 1 <= atomicState.heat_setpoint) {
-                        return atomicState.on_capacity
-                    } else {
-                       return 0
-                    }
-            }
-            break;
-        case "idle":
-        case "fan only":
-            def state = stat.currentValue("thermostatOperatingState")
-            switch ("$state") {
-                case "heating":
-                    break
-                default:
-                    return 0
-            }
-            BigDecimal setpoint = parent_setpoint as BigDecimal
-            BigDecimal temperature = parent_temp as BigDecimal
-            switch ("$heat_trigger") {
-                case "Never":
-                    return 0
-                case "Always":
-                    return atomicState.on_capacity
-                case "When parent zone temp is less than setpoint":
-                    if (temperature <= setpoint) {
-                        return atomicState.on_capacity
-                    } else {
-                       return 0
-                    }
-                case "When parent zone temp is no more than 1 degree above setpoint":
-                    if (temperature - 1 <= setpoint) {
-                        return atomicState.on_capacity
-                    } else {
-                       return 0
-                    }
-            }
-            break;
-    }
-    return 0;
-}
-
 def get_heat_demand(parent_mode) {
     // log.debug("In SubZone get_heat_demand($parent_mode)")
     switch (parent_mode) {
@@ -295,65 +253,15 @@ def get_heat_demand(parent_mode) {
                     }
             }
             break;
-    }
-    return 0;
-}
-
-def get_cool_demand(parent_mode, parent_setpoint, parent_temp ) {
-    // log.debug("In SubZone get_cool_demand($parent_mode, $parent_setpoint, $parent_temp)")
-    switch (parent_mode) {
-        case "cooling":
-            switch ("$cool_join") {
-                case "Only during subzone cooling call":
-                    def state = stat.currentValue("thermostatOperatingState")
-                    switch ("$state") {
-                        case "cooling":
-                            return atomicState.on_capacity
-                        default:
-                            return 0
-                    }
-                case "When subzone temp is greater than setpoint":
-                    if (atomicState.temperature >= atomicState.cool_setpoint) {
+        case "accepting_heat":
+            if (stat) {
+                def state = stat.currentValue("thermostatOperatingState")
+                switch ("$state") {
+                    case "heating":
                         return atomicState.on_capacity
-                    } else {
-                       return 0
-                    }
-                case "When subzone temp is no more than 1 degree below setpoint":
-                    if (atomicState.temperature + 1 >= atomicState.cool_setpoint) {
-                        return atomicState.on_capacity
-                    } else {
-                       return 0
-                    }
-            }
-            break;
-        case "idle":
-        case "fan only":
-            def state = stat.currentValue("thermostatOperatingState")
-            switch ("$state") {
-                case "cooling":
-                    break
-                default:
-                    return 0
-            }
-            BigDecimal setpoint = parent_setpoint as BigDecimal
-            BigDecimal temperature = parent_temp as BigDecimal
-            switch ("$cool_trigger") {
-                case "Never":
-                    return 0
-                case "Always":
-                    return atomicState.on_capacity
-                case "When parent zone temp is greater than setpoint":
-                    if (temperature >= setpoint) {
-                        return atomicState.on_capacity
-                    } else {
-                       return 0
-                    }
-                case "When parent zone temp no more than 1 degree below setpoint":
-                    if (temperature + 1 >= setpoint) {
-                        return atomicState.on_capacity
-                    } else {
-                       return 0
-                    }
+                    default:
+                        return 0
+                }
             }
             break;
     }
@@ -387,6 +295,17 @@ def get_cool_demand(parent_mode) {
                     }
             }
             break;
+        case "accepting_cool":
+            if (stat) {
+                def state = stat.currentValue("thermostatOperatingState")
+                switch ("$state") {
+                    case "cooling":
+                        return atomicState.on_capacity
+                    default:
+                        return 0
+                }
+            }
+            break;
     }
     return 0;
 }
@@ -398,7 +317,6 @@ def get_vent_demand() {
     } else {
         return 0;
     }
-    parent.update_demand()
 }
 
 def idleHandler(evt) {
@@ -498,6 +416,7 @@ def fan_switchHandler(evt) {
             atomicState.fan_switch = false
             break;
     }
+    parent.update_demand()
 }
 
 def heat_setHandler(evt) {
