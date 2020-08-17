@@ -13,7 +13,10 @@
  *  for the specific language governing permissions and limitations under the License.
  *
  * version 0.1 - Initial Release
- * version 0.2 -
+ * version 0.2 -Logic changed to better support Indirect thermostats (introduced concept of dump zones so subzone logic no longer requires zone temperature and setpoint)
+ *             - Misc. robustness improvements
+ *             - Added separate control of dump zone and ventilation selection based on occupancy
+ *             - Added ventilation selection control based on modes
  */
 
 definition(
@@ -33,11 +36,10 @@ preferences {
     page(name: "pageOne", nextPage: "pageTwo", uninstall: true) {
         section ("Zone Data") {
             label required: true, multiple: false
-            // input "stat", "capability.thermostatOperatingState", required: true, title: "Thermostat"
             input "stat", "capability.thermostat", required: true, title: "Thermostat"
             input "cfm", "number", required: true, title: "Maximum airflow for Zone", range: "200 . . 3000"
             input "closed_pos", "number", required: true, title: "Percent Open when in Off position", default: 0, range: "0 . . 100"
-            input "zone", "capability.switch", required: true, title: "Switch for selection of Zone" // future feature - percentage control as opposed to on/off
+            input "zone", "capability.switch", required: true, title: "Switch for selection of Zone"
             input "normally_open", "bool", required: true, title: "Normally Open (i.e. Switch On = Zone Inactive, Switch Off = Zone Selected)", default: true
             input "occupied", "capability.switch", required: false, title: "Optional switch to indicate zone is occupied (On) or unoccupied (Off) - to be set externally"
         }
@@ -147,10 +149,18 @@ def initialize() {
     def value = zone.currentValue("switch")
     switch ("$value") {
         case "on":
-            atomicState.current_mode = parent.get_equipment_status()
+            if (normally_open) {
+                atomicState.current_mode = "unselected"
+            } else {
+                atomicState.current_mode = parent.get_equipment_status()
+            }
             break;
         case "off":
-            atomicState.current_mode = "unselected"
+            if (normally_open) {
+                atomicState.current_mode = parent.get_equipment_status()
+            } else {
+                atomicState.current_mode = "unselected"
+            }
             break;
     }
     atomicState.cool_demand = 0
@@ -212,7 +222,7 @@ def refresh_outputs() {
 
 def refresh_inputs() {
     // log.debug("In refresh_inputs()")
-    if (stat.hasCapability("refresh")) {
+    if (stat.hasCapability("Refresh")) {
         stat.refresh()
     }
     def value = stat.currentValue("thermostatOperatingState")
@@ -236,12 +246,15 @@ def refresh_inputs() {
             if ((atomicState.heat_demand > 0) || (atomicState.cool_demand > 0)) {
                 stateHandler()
             }
-            state = stat.currentValue("thermostatFanMode")
-            switch ("$state.value") {
-                case "on":
-                case " on":
-                if (atomicState.fan_demand == 0) {
-                    stateHandler()
+            if (stat.hasAttribute("thermostatFanMode")) {
+                state = stat.currentValue("thermostatFanMode")
+                log.debug("state.value = $state.value")
+                switch ("$state.value") {
+                    case "on":
+                    case " on":
+                    if (atomicState.fan_demand == 0) {
+                        stateHandler()
+                    }
                 }
             }
             break
@@ -273,8 +286,6 @@ def child_updated() {
     }
     parent.child_updated()
 }
-
-// To do: stopped updating here.
 
 // This function updates atomicState.cool_demand, atomicState.heat_demand, atomicState.fan_demand, 
 // atomicstate.cool_accept, and atomicstate.heat_accept.
@@ -459,12 +470,14 @@ def update_vent_demand() {
     
 def no_cool_for_an_hour() {
     log.debug("In no_cool_for_an_hour()")
-    atomicState.cool_in_last_hour = false;
+    atomicState.cool_in_last_hour = false
+    update_demand()
 }
 
 def no_heat_for_an_hour() {
     log.debug("In no_heat_for_an_hour()")
-    atomicState.heat_in_last_hour = false;
+    atomicState.heat_in_last_hour = false
+    update_demand()
 }
 
 def update_state() {
@@ -472,30 +485,26 @@ def update_state() {
     def new_state = stat.currentValue("thermostatOperatingState")
     switch ("$atomicState.prev_state") {
         case "heating":
+            atomicState.heat_in_last_hour = true;
             switch ("$new_state") {
-                case "heating":
-                    atomicState.heat_in_last_hour = true;
-                    break
                 case "cooling":
                     atomicState.cool_in_last_hour = true;
                     unschedule("no_cool_for_an_hour")
                 case "fan only":
                 case "idle":
-                    runIn(3600, "no_heat_for_an_hour")
+                    runIn(3600, "no_heat_for_an_hour", [misfire: "ignore"])
                     break
             }
             break
         case "cooling":
+            atomicState.cool_in_last_hour = true;
             switch ("$new_state") {
-                case "cooling":
-                    atomicState.cool_in_last_hour = true;
-                    break
                 case "heating":
                     atomicState.heat_in_last_hour = true;
                     unschedule("no_heat_for_an_hour")
                 case "fan only":
                 case "idle":
-                    runIn(3600, "no_cool_for_an_hour")
+                    runIn(3600, "no_cool_for_an_hour", [misfire: "ignore"])
                     break
             }
             break
@@ -519,13 +528,8 @@ def update_state() {
 def stateHandler(evt=NULL) {
     log.debug("In Zone stateHandler()")
     update_state()
-/*
-    if (wired) {
-        def state = stat.currentValue("thermostatOperatingState")
-        parent.update_wired_mode("$state.value")
-    }
-*/
-    runIn(5, "update_demand") // this does the work of calculating what should be demanded of the zone control app, delaying ensures rapid changes only create one call
+    runIn(5, "update_demand", [misfire: "ignore"]) // this does the work of calculating what should be demanded of the zone control app
+    // delaying ensures rapid changes only create one call and also ensures that wired_tstatHandler() gets called before zone_call_changed() in parent.
 }
 
 Boolean update_temp() {
@@ -573,6 +577,7 @@ Boolean update_heat_setpoint() {
     // log.debug("In update_heat_setpoint()")
     if (stat.hasAttribute("heatingSetpoint")) {
         def levelstate = stat.currentState("heatingSetpoint")
+        atomicState.heat_setpoint = new_setpoint
         new_setpoint = levelstate.value as BigDecimal
         def subzones = getChildApps()
         subzones.each { sz ->
@@ -586,6 +591,9 @@ Boolean update_heat_setpoint() {
             changed = true
         }
         atomicState.heat_setpoint = new_setpoint
+        if (new_setpoint - atomicState.temperature >= 1) {
+            parent.stage2_heat()
+        }
         return changed
     } else {
         return false
@@ -599,9 +607,6 @@ def heat_setHandler(evt=NULL) {
     if (update_heat_setpoint()) {
         update_demand()
     }
-    if (new_setpoint - atomicState.temperature > 1) {
-        parent.stage2_heat()
-    }
 }
 
 Boolean update_cool_setpoint() {
@@ -609,6 +614,7 @@ Boolean update_cool_setpoint() {
     if (stat.hasAttribute("coolingSetpoint")) {
         def levelstate = stat.currentState("coolingSetpoint")
         new_setpoint = levelstate.value as BigDecimal
+        atomicState.cool_setpoint = new_setpoint
         def subzones = getChildApps()
         subzones.each { sz ->
             sz.parent_cool_setpoint_updated(new_setpoint)
@@ -619,6 +625,9 @@ Boolean update_cool_setpoint() {
         }
         if ((atomicState.temperature + 1 >= new_setpoint) != (atomicState.temperature + 1 >= atomicState.cool_setpoint)) {
             changed = true
+        }
+        if (atomicState.temperature - new_setpoint >= 1) {
+            parent.stage2_cool()
         }
         return changed
     } else {
@@ -632,9 +641,6 @@ def cool_setHandler(evt=NULL) {
     // log.debug("In SubZone cool_setHandler()")
     if (update_cool_setpoint()) {
         update_demand()
-    }
-    if (atomicState.temperature - new_setpoint > 1) {
-        parent.stage2_cool()
     }
 }
 
@@ -672,10 +678,9 @@ Boolean full_thermostat() {
     def heat_state = stat.currentState("heatingSetpoint")
     def cool_state = stat.currentState("coolingSetpoint")
     return (temp_state) && (heat_state) && (cool_state)
-    // return stat.hasAttribute("coolingSetpoint") && stat.hasAttribute("heatingSetpoint") && stat.hasAttribute("temperature")
 }
 
-// These functions let the zone control app and and subzones access this zones state
+// These functions let the zone control app and subzones access this zones state
 
 def get_off_capacity() {
     return atomicState.off_capacity
