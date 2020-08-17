@@ -12,36 +12,46 @@
  *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *  for the specific language governing permissions and limitations under the License.
  *
+ *
+ * This device type serves two distinct purposes:
+ * i) This device can be used to receive status information, including state and cumulative time in each mode, from HVAC Zoning app.
+ * The status information can be displayed on a dashboard.
+ * ii) This can be used, in conjunction with an Indirect Thermostat Filler app, as a Thermostat input to an HVAC Zone when ThermostatOperatingState is being physically sensed.
+ * Although it implements Thermostat capability, the attributes for setpoint and temperature will be null unless provided via another device.
+ * Even when setpoints and temperature ate provided, they do not directly cause operating state transitions.
+ * By using the same device for both purposes, reporting of cumulative time in mode is available for indirect thermostats.
  * Version 0.2 - Initial Release
  */
 
 metadata {
 	definition (name: "HVAC Zoning Status", namespace: "rbaldwi3", author: "Reid Baldwin", cstHandler: true) {
-		capability "Refresh"
+		capability "Refresh" // refresh() ensures that the cumulative time attributes are up to date. Otherwise, the attributes are only updated on state changes.
 		capability "Thermostat"
-		capability "ThermostatOperatingState"
 	}
+    attribute "debug_msg", "string"
     attribute "equipState", "string"
     attribute "ventState", "string"
     attribute "fanState", "string"
-    attribute "cooling_time", "number"
-    attribute "heating_time", "number"
-    attribute "cooling2_time", "number"
-    attribute "heating2_time", "number"
-    attribute "fan_time", "number"
-    attribute "idle_time", "number"
+    attribute "cooling_time", "number" // cumulative cooling time, including first and second stages, in seconds
+    attribute "heating_time", "number" // cumulative heating time, including first and second stages, in seconds
+    attribute "cooling2_time", "number" // cumulative second stage cooling time, in seconds
+    attribute "heating2_time", "number" // cumulative second stage heating time, in seconds
+    attribute "fan_time", "number" // cumulative fan only time, in seconds
+    attribute "idle_time", "number" // cumulative idle time, in seconds
+    command "debug", ["string"]
     command "second_stage_on"
     command "second_stage_off"
     command "update", ["bool", "bool", "bool"]
     command "setequipState", ["string"]
     command "setventState", ["string"]
     command "setfanState", ["string"]
-    command "reset_runtime"
+    command "reset_runtime" // resets all cumulative time attributes to zero
     command "setTemperature", ["decimal"]
 }
 
 def installed() {
     log.debug("In installed()")
+    state.tz_offset = location.timeZone.rawOffset/1000/60/60
     initialize()
 }
 
@@ -54,15 +64,24 @@ def updated() {
 
 def initialize() {
     log.debug("In initialize()")
-    state.cooling_time = 0
-    state.heating_time = 0
-    state.cooling2_time = 0
-    state.heating2_time = 0
-    state.fan_time = 0
-    state.idle_time = 0
+    reset_runtime()
     state.fan_state = "auto"
     state.currentState = "idle"
     state.second_stage = false
+    setequipState("Idle")
+    setventState("Off")
+    setfanState("Off")
+    debug("initialized")
+}
+
+def set_tz_offset() {
+    // log.debug("In set_tz_offset()")
+    Long seconds = now() / 1000
+    Long minutes = seconds / 60
+    Long hours = minutes / 60
+    Long days = hours / 24
+    hours = hours - (days * 24)
+    state.tz_offset = hours - 3
 }
 
 def second_stage_on() {
@@ -79,6 +98,7 @@ def second_stage_off() {
 def refresh() {
     log.debug("In refresh()")
     add_interval()
+    // schedule("0 0 0 * * ?", set_tz_offset)
 }
 
 def reset_runtime() {
@@ -132,13 +152,10 @@ def add_interval() {
     }
 }
 
-// parse events into attributes
-def parse(String description) {
-	log.debug "Parsing '${description}'"
-}
-
 String time_string(Long time) {
-    Long seconds = time / 1000 - 4*60*60
+    // log.debug("The time zone for this location is: ${location.timeZone}")
+    // log.debug("offset is $location.timeZone.rawOffset")
+    Long seconds = time / 1000 - state.tz_offset*60*60
     Long minutes = seconds / 60
     Long hours = minutes / 60
     Long days = hours / 12
@@ -221,6 +238,10 @@ def setequipState(new_equip_state) {
     }
     String time = time_string(now())
     sendEvent(name:"equipState", value:"$new_equip_state since $time")
+    // schedule("0 0 0 * * ?", set_tz_offset)
+}
+
+def getSchedule() {    
 }
 
 def setventState(String new_state) {
@@ -234,6 +255,7 @@ def setventState(String new_state) {
     }
     String time = time_string(now())
     sendEvent(name:"ventState", value:"$new_state since $time")
+    schedule("0 30 3 ? * *", set_tz_offset)
 }
 
 def setfanState(String new_state) {
@@ -256,6 +278,12 @@ def setfanState(String new_state) {
     sendEvent(name:"fanState", value:"$new_state")
 }
 
+def debug(String msg) {
+    log.debug("In debug($msg)")
+    String time = time_string(now())
+    sendEvent(name:"debug_msg", value:"$msg at $time")
+}
+
 def auto() {
     sendEvent(name:"thermostatMode", value:"auto")
 }
@@ -265,7 +293,6 @@ def cool() {
 }
 
 def emergencyHeat() {
-    sendEvent(name:"thermostatMode", value:"emergency heat")
 }
 
 def fanAuto() {
@@ -274,7 +301,6 @@ def fanAuto() {
 }
 
 def fanCirculate() {
-    sendEvent(name:"thermostatFanMode", value:"circulate")
 }
 
 def fanOn() {
@@ -310,8 +336,10 @@ def setSchedule(JSON_OBJECT) {
 
 def setThermostatFanMode(fanmode) {
     // fanmode required (ENUM) - Fan mode to set
+    sendEvent(name:"thermostatFanMode", value:fanmode)
 }
 
 def setThermostatMode(thermostatmode) {
     // thermostatmode required (ENUM) - Thermostat mode to set
+    sendEvent(name:"thermostatMode", value:thermostatmode)
 }
