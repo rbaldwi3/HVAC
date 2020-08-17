@@ -13,7 +13,9 @@
  *  for the specific language governing permissions and limitations under the License.
  *
  * version 0.1 - Initial Release
- * version 0.2 -
+ * version 0.2 - Logic changed to better support Indirect thermostats (introduced concept of dump zones so subzone logic no longer requires zone temperature and setpoint)
+ *             - Misc. robustness improvements
+ *             - Added separate control of dump zone and ventilation selection based on occupancy
  */
 
 definition(
@@ -32,7 +34,7 @@ preferences {
     page(name: "pageOne", nextPage: "pageTwo", uninstall: true) {
         section ("Zone Data") {
             label required: true, multiple: false
-            input "cfm", "number", required: true, title: "Maximum airflow for Zone", range: "200 . . 3000"
+            input "cfm", "number", required: true, title: "Maximum airflow for Zone", range: "100 . . 1000"
             input "closed_pos", "number", required: true, title: "Percent Open when in Off position", default: 0, range: "0 . . 100"
             input "zone", "capability.switch", required: true, title: "Selection of Zone" // future feature - percentage control as opposed to on/off
             input "normally_open", "bool", required: true, title: "Normally Open (i.e. Switch On = Zone Inactive, Switch Off = Zone Selected)", default: false
@@ -43,7 +45,7 @@ preferences {
 
 def pageTwo() {
     dynamicPage(name: "pageTwo") {
-        if (tstat) {
+        if (stat) {
             section ("Temperature and Set point - Specify either a thermostat or a temperatures sensor and offsets from the parent zone setpoints") {
                 input "stat", "capability.thermostat", required: true, title: "Thermostat", submitOnChange: true
                 input "temp_sensor", "capability.temperatureMeasurement", required: false, title: "Temperature Sensor", submitOnChange: true
@@ -59,7 +61,7 @@ def pageTwo() {
             }
         }
         section ("Control Rules") {
-            if (ttat) {
+            if (stat) {
                 input (name:"heat_join", type: "enum", required: true, title: "Select during parent zone heating call", options: ["Only during subzone heating call",
                                                                                                                             "When subzone temp is less than setpoint",
                                                                                                                             "When subzone temp is no more than 1 degree above setpoint"])
@@ -72,10 +74,9 @@ def pageTwo() {
                 input (name:"cool_join", type: "enum", required: true, title: "Select during parent zone cooling call", options: ["When subzone temp is greater than setpoint",
                                                                                                                             "When subzone temp is no more than 1 degree below setpoint"])
             }
-            input "fan_switch", "capability.switch", required: false, title: "Switch to select whether subzone is selected during parent fan only call (including ventilation)"
+            input "fan_switch", "capability.switch", required: false,
+                title: "Optional switch to select whether subzone is selected during parent fan only call (including ventilation) - not selected by default"
             // time interval for polling in case any signals missed
-            input(name:"output_refresh_interval", type:"enum", required: true, title: "Output refresh", options: ["None","Every 5 minutes","Every 10 minutes",
-                                                                                                                 "Every 15 minutes","Every 30 minutes"]) 
             input(name:"input_refresh_interval", type:"enum", required: true, title: "Input refresh", options: ["None","Every 5 minutes","Every 10 minutes",
                                                                                                                  "Every 15 minutes","Every 30 minutes"]) 
         }
@@ -96,7 +97,6 @@ def initialize() {
     // Preprocessing of airflow per zone
     atomicState.off_capacity = settings.cfm * settings.closed_pos / 100
     atomicState.on_capacity = settings.cfm - atomicState.off_capacity
-    // Sanity check the settings
     // Subscribe to state changes
     if (stat) {
         subscribe(stat, "thermostatOperatingState.idle", idleHandler)
@@ -136,22 +136,6 @@ def initialize() {
     } else {
         atomicState.fan_switch = false
     }
-    switch ("$output_refresh_interval") {
-        case "None":
-            break
-        case "Every 5 minutes":
-            runEvery5Minutes(refresh_outputs)
-            break
-        case "Every 10 minutes":
-            runEvery10Minutes(refresh_outputs)
-            break
-        case "Every 15 minutes":
-            runEvery15Minutes(refresh_outputs)
-            break
-        case "Every 30 minutes":
-            runEvery30Minutes(refresh_outputs)
-            break
-    }
     switch ("$input_refresh_interval") {
         case "None":
             break
@@ -171,16 +155,12 @@ def initialize() {
     parent.child_updated()
 }
 
-def refresh_outputs() {
-    // log.debug("In refresh_outputs()")
-}
-
 def refresh_inputs() {
     // log.debug("In refresh_inputs()")
     if (!stat) {
         return
     }
-    if (stat.hasCapability("refresh")) {
+    if (stat.hasCapability("Refresh")) {
         stat.refresh()
     }
     def value = stat.currentValue("thermostatOperatingState")
