@@ -1,0 +1,54 @@
+{
+  "packageName": "HVAC Zoning",
+  "author": "Reid Baldwin",
+  "version": "0.2",
+  "minimumHEVersion": "2.1.9",
+  "dateReleased": "2020-09-15",
+  "apps": [
+    {
+      "id": "ee92eb65-a367-4c64-8615-ea6eb6bb99bf",
+      "name": "HVAC Zoning",
+      "namespace": "rbaldwi3",
+      "location": "https://raw.githubusercontent.com/rbaldwi3/HVAC/master/HVAC_Zoning.groovy",
+      "required": true,
+      "oauth": false,
+      "primary": false
+    },
+    {
+      "id": "1fac5397-73f2-4d99-b378-1971ecbfb7d9",
+      "name": "HVAC Zone",
+      "namespace": "rbaldwi3",
+      "location": "https://raw.githubusercontent.com/rbaldwi3/HVAC/master/HVAC_Zone.groovy",
+      "required": true,
+      "oauth": false,
+      "primary": false
+    },
+    {
+      "id": "6d562bd4-2969-4ae7-93f7-9bde3a9b19c7",
+      "name": "HVAC SubZone",
+      "namespace": "rbaldwi3",
+      "location": "https://raw.githubusercontent.com/rbaldwi3/HVAC/master/HVAC_SubZone.groovy",
+      "required": true,
+      "oauth": false,
+      "primary": false
+    },
+    {
+      "id": "8635524c-f856-43b1-9707-7ec59dab38af",
+      "name": "Indirect Thermostat Filler",
+      "namespace": "rbaldwi3",
+      "location": "https://raw.githubusercontent.com/rbaldwi3/HVAC/master/Indirect_Thermostat_Filler.groovy",
+      "required": false,
+      "oauth": false,
+      "primary": false
+    }
+  ],
+  "drivers": [
+    {
+      "id": "83cd3fdb-97fd-4bd7-b614-332e97f116fc",
+      "name": "HVAC Zoning Status",
+      "namespace": "rbaldwi3",
+      "location": "https://raw.githubusercontent.com/rbaldwi3/HVAC/master/HVAC_Zoning_Status.groovy",
+      "required": false
+    }
+  ]
+}
