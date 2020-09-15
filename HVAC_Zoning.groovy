@@ -32,6 +32,9 @@ definition(
 
 preferences {
     page(name: "pageOne", nextPage: "pageTwo", uninstall: true) {
+        section ("Label") {
+            label required: true, multiple: false
+        }
         section ("Zones") {
             app(name: "zones", appName: "HVAC Zone", namespace: "rbaldwi3", title: "Create New Zone", multiple: true, submitOnChange: true)
         }
@@ -41,7 +44,7 @@ preferences {
             input(name: "vent_type", type: "enum", required: true, title: "Ventilation Equipment Type", options: ["None", "Requires Blower", "Doesn't Require Blower"])
         }
         section ("Wired Thermostat") {
-            input "wired_tstat", "capability.thermostatOperatingState", required: false, title: "Thermostat wired to Equipment (not required)"
+            input "wired_tstat", "capability.thermostat", required: false, title: "Thermostat wired to Equipment (not required)"
         }
     }
     page(name: "pageTwo", title: "Equipment Data", install: true, uninstall: true)
@@ -168,14 +171,14 @@ def installed() {
 }
 
 def updated() {
-    // log.debug("In updated()")
+    log.debug("In updated()")
     unsubscribe()
     unschedule()
     initialize()
 }
 
 def initialize() {
-    // log.debug("In initialize()")
+    log.debug("In initialize()")
     child_updated()
     // Subscribe to state changes for inputs and set state variables to reflect their current values
     switch ("$vent_type") {
@@ -211,7 +214,7 @@ def initialize() {
         atomicState.over_pressure_time = now() - 5*60*1000
     }
     if (wired_tstat) {
-        subscribe(stat, "thermostatOperatingState", wired_tstatHandler)
+        subscribe(wired_tstat, "thermostatOperatingState", wired_tstatHandler)
         wired_tstatHandler() // sets wired mode and calls zone_call_changed()
     } else {
         atomicState.wired_mode = "none"
@@ -481,32 +484,58 @@ def wired_tstatHandler(evt=NULL) {
     }
 }
 
-// This routine handles a change in status in a zone
-// It also gets called by equipment_state_timeout() after time-based equipment state changes
-
-def zone_call_changed() {
-    log.debug("In zone_call_changed()")
+Boolean update_demand() {
+    log.debug("In update_demand()")
     // heating, cooling, and fan demands come from thermostats in zones (or sometimes subzones) initiating a call
     // the value represents the cubic feet per minute of airflow desired
-    atomicState.cool_demand = 0
-    atomicState.heat_demand = 0
-    atomicState.fan_demand = 0
+    cool_demand = 0
+    heat_demand = 0
+    fan_demand = 0
     // heat_accept and cool_accept represent the cubic feet per minute of airflow the zone volunteers to accept (as a dump zone)
-    atomicState.cool_accept = 0
-    atomicState.heat_accept = 0
+    cool_accept = 0
+    heat_accept = 0
     // vent demand is the cubic feet per minute that zones would accept if the system goes into ventilation mode with no heating or cooling equipment running
-    atomicState.vent_demand = 0
+    vent_demand = 0
     def zones = getChildApps()
     zones.each { z ->
-        atomicState.cool_demand += z.get_cool_demand()
-        atomicState.heat_demand += z.get_heat_demand()
-        atomicState.fan_demand += z.get_fan_demand()
-        atomicState.vent_demand += z.get_vent_demand()
-        atomicState.cool_accept += z.get_cool_accept()
-        atomicState.heat_accept += z.get_heat_accept()
+        cool_demand += z.get_cool_demand()
+        heat_demand += z.get_heat_demand()
+        fan_demand += z.get_fan_demand()
+        vent_demand += z.get_vent_demand()
+        cool_accept += z.get_cool_accept()
+        heat_accept += z.get_heat_accept()
     }
-    log.debug("cool_demand = $atomicState.cool_demand, heat_demand = $atomicState.heat_demand, cool_accept = $atomicState.cool_accept, heat_accept = $atomicState.heat_accept, fan_demand = $atomicState.fan_demand, vent_demand = $atomicState.vent_demand")
-    // log.debug("In state $atomicState.equip_state")  
+    if (wired_tstat) {
+        if (fan_by_wired_tstat) { // fan by request is disabled in this condition because we cannot distinguish a request from fan being turned on by app
+            fan_demand = 0
+        }
+        def opstate = wired_tstat.currentValue("thermostatOperatingState")
+        switch ("$opstate") {
+            case "cooling":
+                heat_demand = 0
+                break
+            case "heating":
+                cool_demand = 0
+                break
+        }
+    }
+    atomicState.vent_demand = vent_demand
+    if ((cool_demand != atomicState.cool_demand) || (heat_demand != atomicState.heat_demand) || (fan_demand != atomicState.fan_demand) ||
+        (cool_accept != atomicState.cool_accept) || (heat_accept != heat_accept)) {
+        atomicState.cool_demand = cool_demand
+        atomicState.heat_demand = heat_demand
+        atomicState.fan_demand = fan_demand
+        atomicState.cool_accept = cool_accept
+        atomicState.heat_accept = heat_accept
+        log.debug("cool_demand = $atomicState.cool_demand, heat_demand = $atomicState.heat_demand, cool_accept = $atomicState.cool_accept, heat_accept = $atomicState.heat_accept, fan_demand = $atomicState.fan_demand, vent_demand = $atomicState.vent_demand")
+        return true
+    } else {
+        return false
+    }
+}
+
+def update_equipment_state() {
+    log.debug("In zone_call_changed() - current state is $atomicState.equip_state")  
     // this section updates the state and, in heating and cooling modes, selects the zones and equipment
     switch ("$atomicState.equip_state") {
         case "Idle":
@@ -574,16 +603,25 @@ def zone_call_changed() {
     }
 }
 
+// This routine handles a change in status in a zone
+
+def zone_call_changed() {
+    log.debug("In zone_call_changed()")
+    if (update_demand()) {
+        update_equipment_state()
+    }
+}
+
 def equipment_state_timeout() {
     log.debug("In equipment_state_timeout()")
     switch ("$atomicState.equip_state") {
         case "Idle":
-            log.debug("timeout in Idle mode shouldn't happen")
+            debug("timeout in Idle mode shouldn't happen")
             break
         case "IdleH":
         case "IdleC":
             set_equip_state("Idle")
-            zone_call_changed()
+            update_equipment_state()
             break
         case "PauseH":
             if (mode_change_delay > heat_min_idletime) {
@@ -592,7 +630,7 @@ def equipment_state_timeout() {
             } else {
                 set_equip_state("Idle")
             }
-            zone_call_changed()
+            update_equipment_state()
             break
         case "PauseC":
             if (mode_change_delay > cool_min_idletime) {
@@ -601,21 +639,21 @@ def equipment_state_timeout() {
             } else {
                 set_equip_state("Idle")
             }
-            zone_call_changed()
+            update_equipment_state()
             break
         case "Heating":
-            log.debug("timeout in Heating mode shouldn't happen")
+            debug("timeout in Heating mode shouldn't happen")
             break
         case "HeatingL":
             set_equip_state("Heating")
-            zone_call_changed()
+            update_equipment_state()
             break
         case "Cooling":
-            log.debug("timeout in Cooling mode shouldn't happen")
+            debug("timeout in Cooling mode shouldn't happen")
             break
         case "CoolingL":
             set_equip_state("Cooling")
-            zone_call_changed()
+            update_equipment_state()
             break
     }
 }
