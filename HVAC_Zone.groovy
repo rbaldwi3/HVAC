@@ -49,6 +49,9 @@ preferences {
 
 def pageTwo() {
     dynamicPage(name: "pageTwo") {
+        section {
+            app(name: "subzone", appName: "HVAC SubZone", namespace: "rbaldwi3", title: "Create New Sub-Zone", multiple: true, submitOnChange: true)
+        }
         if (occupied) {
             section ("Control Rules when Zone is Occupied") {
                 if (full_thermostat()) {
@@ -107,9 +110,6 @@ def pageTwo() {
                                                                                                                  "Every 15 minutes","Every 30 minutes"]) 
             input(name:"input_refresh_interval", type:"enum", required: true, title: "Input refresh", options: ["None","Every 5 minutes","Every 10 minutes",
                                                                                                                  "Every 15 minutes","Every 30 minutes"]) 
-        }
-        section {
-            app(name: "subzone", appName: "HVAC SubZone", namespace: "rbaldwi3", title: "Create New Sub-Zone", multiple: true, submitOnChange: true)
         }
     }
 }
@@ -207,7 +207,7 @@ def initialize() {
 }
 
 def refresh_outputs() {
-    // log.debug("In refresh_outputs()")
+    log.debug("In refresh_outputs(" + $atomicState.current_mode + ")")
     switch ("$atomicState.current_mode") {
         case "unselected":
             turn_off()
@@ -221,7 +221,7 @@ def refresh_outputs() {
 }
 
 def refresh_inputs() {
-    // log.debug("In refresh_inputs()")
+    log.debug("In refresh_inputs()")
     if (stat.hasCapability("Refresh")) {
         stat.refresh()
     }
@@ -247,9 +247,8 @@ def refresh_inputs() {
                 stateHandler()
             }
             if (stat.hasAttribute("thermostatFanMode")) {
-                state = stat.currentValue("thermostatFanMode")
-                log.debug("state.value = $state.value")
-                switch ("$state.value") {
+                fan_state = stat.currentValue("thermostatFanMode")
+                switch ("$fan_state.value") {
                     case "on":
                     case " on":
                     if (atomicState.fan_demand == 0) {
@@ -674,6 +673,7 @@ def occupiedHandler(evt=NULL) {
 }
 
 Boolean full_thermostat() {
+    log.debug("In full_thermostat()")
     def temp_state = stat.currentState("temperature")
     def heat_state = stat.currentState("heatingSetpoint")
     def cool_state = stat.currentState("coolingSetpoint")
@@ -773,6 +773,7 @@ def turn_on(mode) {
 }
 
 def turn_off() {
+    log.debug("In Zone turn_off()")
     atomicState.current_mode = "unselected"
     if (normally_open) {
         zone.on()
@@ -783,6 +784,7 @@ def turn_off() {
 
 def turn_idle() {
     // when the equipment is idle, including the blower, the zone switch is turned off, regardless of whether it is normally on or normally off
+    log.debug("In Zone turn_idle()")
     atomicState.current_mode = "idle"
     zone.off()
 }
