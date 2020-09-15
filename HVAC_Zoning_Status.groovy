@@ -28,6 +28,7 @@ metadata {
 		capability "Refresh" // refresh() ensures that the cumulative time attributes are up to date. Otherwise, the attributes are only updated on state changes.
 		capability "Thermostat"
 	}
+    attribute "runtime_msg", "string"
     attribute "debug_msg", "string"
     attribute "equipState", "string"
     attribute "ventState", "string"
@@ -150,21 +151,34 @@ def add_interval() {
         default:
             log.debug("State $state.currentState not recognized")
     }
+    String result = ""
+    if (state.heating_time) {
+        result += "heating=" + duration_string(state.heating_time)
+        if (state.heating2_time) {
+            result += "(" + duration_string(state.heating2_time) + ")"
+        }
+        result += " "
+    }
+    if (state.cooling_time) {
+        result += "cooling=" + duration_string(state.cooling_time)
+        if (state.cooling2_time) {
+            result += "(" + duration_string(state.cooling2_time) + ")"
+        }
+        result += " "
+    }
+    /*
+    if (state.fan_time) {
+        result += "fan only=" + duration_string(state.fan_time) + " "
+    }
+    if (state.idle_time) {
+        result += "idle=" + duration_string(state.idle_time)
+    }
+    */
+    sendEvent(name:"runtime_msg", value:"$result")
+    state.runtime_msg = result
 }
 
-String time_string(Long time) {
-    // log.debug("The time zone for this location is: ${location.timeZone}")
-    // log.debug("offset is $location.timeZone.rawOffset")
-    Long seconds = time / 1000 - state.tz_offset*60*60
-    Long minutes = seconds / 60
-    Long hours = minutes / 60
-    Long days = hours / 12
-    seconds = seconds - (minutes * 60)
-    minutes = minutes - (hours * 60)
-    hours = hours - (days * 12)
-    if (hours == 0) {
-        hours = 12
-    }
+String print_time(Long hours, Long minutes, Long seconds) {
     if (minutes < 10) {
         if (seconds < 10) {
             return "$hours:0$minutes:0$seconds"
@@ -178,6 +192,28 @@ String time_string(Long time) {
             return "$hours:$minutes:$seconds"
         }
     }
+}
+
+String time_string(Long time) {
+    Long seconds = time / 1000 - state.tz_offset*60*60
+    Long minutes = seconds / 60
+    Long hours = minutes / 60
+    Long days = hours / 12
+    seconds = seconds - (minutes * 60)
+    minutes = minutes - (hours * 60)
+    hours = hours - (days * 12)
+    if (hours == 0) {
+        hours = 12
+    }
+    return print_time(hours, minutes, seconds)
+}
+
+String duration_string(Long seconds) {
+    Long minutes = seconds / 60
+    Long hours = minutes / 60
+    seconds = seconds - (minutes * 60)
+    minutes = minutes - (hours * 60)
+    return print_time(hours, minutes, seconds)
 }
 
 def update(heat, cool, fan) {
