@@ -93,7 +93,7 @@ def updated() {
 }
 
 def initialize() {
-    // log.debug("In SubZone Initialize()")
+    log.debug("In SubZone Initialize()")
     // Preprocessing of airflow per zone
     atomicState.off_capacity = settings.cfm * settings.closed_pos / 100
     atomicState.on_capacity = settings.cfm - atomicState.off_capacity
@@ -111,7 +111,8 @@ def initialize() {
         atomicState.heat_setpoint = levelstate.value as BigDecimal
         levelstate = stat.currentState("coolingSetpoint")
         atomicState.cool_setpoint = levelstate.value as BigDecimal
-    } else if (temp_sensor && parent.full_thermpostat()) {
+    } else if (temp_sensor && parent.full_thermostat()) {
+	    subscribe(temp_sensor, "temperature", tempHandler)
         def levelstate = temp_sensor.currentState("temperature")
         atomicState.temperature = levelstate.value as BigDecimal
         atomicState.heat_setpoint = parent.get_heat_setpoint() + settings.heat_offset
@@ -156,7 +157,7 @@ def initialize() {
 }
 
 def refresh_inputs() {
-    // log.debug("In refresh_inputs()")
+    log.debug("In refresh_inputs()")
     if (!stat) {
         return
     }
@@ -207,7 +208,7 @@ def refresh_inputs() {
 }
 
 def get_heat_demand(parent_mode) {
-    // log.debug("In SubZone get_heat_demand($parent_mode)")
+    log.debug("In SubZone get_heat_demand($parent_mode)")
     switch (parent_mode) {
         case "heating":
             switch ("$heat_join") {
@@ -249,7 +250,7 @@ def get_heat_demand(parent_mode) {
 }
 
 def get_cool_demand(parent_mode) {
-    // log.debug("In SubZone get_cool_demand($parent_mode)")
+    log.debug("In SubZone get_cool_demand($parent_mode)")
     switch (parent_mode) {
         case "cooling":
             switch ("$cool_join") {
@@ -291,7 +292,7 @@ def get_cool_demand(parent_mode) {
 }
 
 def get_vent_demand() {
-    // log.debug("In SubZone get_vent_demand()")
+    log.debug("In SubZone get_vent_demand()")
     if (atomicState.fan_switch) {
         return atomicState.on_capacity
     } else {
@@ -300,24 +301,29 @@ def get_vent_demand() {
 }
 
 def idleHandler(evt) {
-    // log.debug("In SubZone idleHandler()")
+    log.debug("In SubZone idleHandler()")
     parent.update_demand()
 }
 
 def heatHandler(evt) {
-    // log.debug("In SubZone heatHandler()")
+    log.debug("In SubZone heatHandler()")
     parent.update_demand()
 }
 
 def coolHandler(evt) {
-    // log.debug("In SubZone coolHandler()")
+    log.debug("In SubZone coolHandler()")
     parent.update_demand()
 }
 
 def tempHandler(evt) {
-    // log.debug("In SubZone tempHandler()")
-    def levelstate = stat.currentState("temperature")
-    new_temp = levelstate.value as BigDecimal
+    log.debug("In SubZone tempHandler()")
+    if (stat) {
+        def levelstate = stat.currentState("temperature")
+        new_temp = levelstate.value as BigDecimal
+    } else {
+        def levelstate = temp_sensor.currentState("temperature")
+        new_temp = levelstate.value as BigDecimal
+    }
     changed = false;
     switch ("$heat_join") {
         case "Only during subzone heating call":
@@ -354,7 +360,7 @@ def tempHandler(evt) {
 }
 
 def heat_setpoint_updated(new_setpoint) {
-    // log.debug("In SubZone heat_setpoint_updated($new_setpoint)")
+    log.debug("In SubZone heat_setpoint_updated($new_setpoint)")
     changed = false;
     switch ("$heat_join") {
         case "Only during subzone heating call":
@@ -377,7 +383,7 @@ def heat_setpoint_updated(new_setpoint) {
 }
 
 def parent_heat_setpoint_updated(parent_setpoint) {
-    // log.debug("In SubZone parent_heat_setpoint_updated($parent_setpoint)")
+    log.debug("In SubZone parent_heat_setpoint_updated($parent_setpoint)")
     if (!stat) {
         new_setpoint = parent_setpoint as BigDecimal
         new_setpoint += settings.heat_offset
@@ -386,7 +392,7 @@ def parent_heat_setpoint_updated(parent_setpoint) {
 }
 
 def fan_switchHandler(evt) {
-    // log.debug("In SubZone fan_switchHandler()")
+    log.debug("In SubZone fan_switchHandler()")
     def currentvalue = fan_switch.currentValue("switch")
     switch ("$currentvalue") {
         case "on":
@@ -400,14 +406,14 @@ def fan_switchHandler(evt) {
 }
 
 def heat_setHandler(evt) {
-    // log.debug("In SubZone heat_setHandler()")
+    log.debug("In SubZone heat_setHandler()")
     def levelstate = stat.currentState("heatingSetpoint")
     new_setpoint = levelstate.value as BigDecimal
     heat_setpoint_updated(new_setpoint)
 }
 
 def cool_setpoint_updated(new_setpoint) {
-    // log.debug("In SubZone cool_setpoint_updated($new_setpoint)")
+    log.debug("In SubZone cool_setpoint_updated($new_setpoint)")
     changed = false;
     switch ("$cool_join") {
         case "Only during subzone cooling call":
@@ -430,7 +436,7 @@ def cool_setpoint_updated(new_setpoint) {
 }
 
 def parent_cool_setpoint_updated(parent_setpoint) {
-    // log.debug("In SubZone parent_cool_setpoint_updated($parent_setpoint)")
+    log.debug("In SubZone parent_cool_setpoint_updated($parent_setpoint)")
     if (!stat) {
         new_setpoint = parent_setpoint as BigDecimal
         new_setpoint += settings.cool_offset
@@ -439,7 +445,7 @@ def parent_cool_setpoint_updated(parent_setpoint) {
 }
 
 def cool_setHandler(evt) {
-    // log.debug("In SubZone cool_setHandler()")
+    log.debug("In SubZone cool_setHandler()")
     def levelstate = stat.currentState("coolingSetpoint")
     new_setpoint = levelstate.value as BigDecimal
     cool_setpoint_updated(new_setpoint)
@@ -458,7 +464,7 @@ def get_fan_switch() {
 }
 
 def turn_on() {
-    // log.debug("In SubZone turn_on()")
+    log.debug("In SubZone turn_on()")
     if (normally_open) {
         zone.off()
     } else {
@@ -467,7 +473,7 @@ def turn_on() {
 }
 
 def turn_off() {
-    // log.debug("In SubZone turn_off()")
+    log.debug("In SubZone turn_off()")
     if (normally_open) {
         zone.on()
     } else {
