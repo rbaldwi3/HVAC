@@ -5,8 +5,9 @@
 	{
 		"name": "HVAC Zoning",
 		"category": "Control",
+       		"tags": [ "Climate Control", "Temperature & Humidity" ],
 		"location": "https://raw.githubusercontent.com/rbaldwi3/HVAC/HVACZoneManifest.json",
-		"description": "HVAC Equipment and ZOning Control"
+		"description": "HVAC Equipment and Zoning Control"
 	}
    ]
 }
