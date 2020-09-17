@@ -181,7 +181,7 @@ def refresh_inputs() {
                 stateHandler()
             }
             break
-        case "idle":
+        default:
             if ((atomicState.heat_demand > 0) || (atomicState.cool_demand > 0)) {
                 stateHandler()
             }
@@ -192,8 +192,7 @@ def refresh_inputs() {
                 if (atomicState.fan_demand == 0) {
                     stateHandler()
                 }
-            }
-            break
+	    }
     }
     def levelstate = stat.currentState("heatingSetpoint")
     new_setpoint = levelstate.value as BigDecimal
