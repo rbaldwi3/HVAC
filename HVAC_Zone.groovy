@@ -242,7 +242,7 @@ def refresh_inputs() {
                 stateHandler()
             }
             break
-        case "idle":
+        default:
             if ((atomicState.heat_demand > 0) || (atomicState.cool_demand > 0)) {
                 stateHandler()
             }
@@ -256,7 +256,6 @@ def refresh_inputs() {
                     }
                 }
             }
-            break
     }
     if (stat.hasAttribute("heatingSetpoint")) {
         def levelstate = stat.currentState("heatingSetpoint")
@@ -319,7 +318,7 @@ def update_demand() {
         case "fan only":
             // when idle or fan only command, determine if any subzones would trigger heating or cooling calls for this main zone
             fan_demand = atomicState.on_capacity
-        case "idle":
+        default:
             if (full_thermostat()) {
                 state = stat.currentValue("thermostatFanMode")
                 switch ("$state.value") {
@@ -419,7 +418,6 @@ def update_demand() {
                     cool_accept = cool_demand
                 }
             }
-            break
     }
     log.debug("heat_demand = $heat_demand, heat_accept = $heat_accept, cool_demand = $cool_demand, cool_accept = $cool_accept, fan_demand = $fan_demand")
     if ((atomicState.heat_demand != heat_demand) || (atomicState.cool_demand != cool_demand) || (atomicState.fan_demand != fan_demand) ||
@@ -507,8 +505,7 @@ def update_state() {
                     break
             }
             break
-        case "fan only":
-        case "idle":
+        default:
             switch ("$new_state") {
                 case "cooling":
                     atomicState.cool_in_last_hour = true;
@@ -519,7 +516,6 @@ def update_state() {
                     unschedule("no_heat_for_an_hour")
                     break
             }
-            break
     }
     atomicState.prev_state = new_state
 }
