@@ -1,7 +1,7 @@
 /**
  *  HVAC Zoning
  *
- *  Copyright 2020 Reid Baldwin
+ *  Copyright 2021 Reid Baldwin
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
@@ -17,6 +17,7 @@
  *            - Logic changed to better support Indirect thermostats
  *            - Added reporting via HVAC Zone Status device
  *            - Misc. robustness improvements
+ * version 0.3 - restructured so apps communicate via HVAC Zone Status virtual devices
  */
 
 definition(
@@ -35,106 +36,223 @@ preferences {
         section ("Label") {
             label required: true, multiple: false
         }
-        section ("Zones") {
-            app(name: "zones", appName: "HVAC Zone", namespace: "rbaldwi3", title: "Create New Zone", multiple: true, submitOnChange: true)
-        }
         section ("Equipment Types") {
-            input(name: "heat_type", type: "enum", required: true, title: "Heating Equipment Type", options: ["None","Single stage","Two stage"])
-            input(name: "cool_type", type: "enum", required: true, title: "Cooling Equipment Type", options: ["None","Single stage","Two stage"])
-            input(name: "vent_type", type: "enum", required: true, title: "Ventilation Equipment Type", options: ["None", "Requires Blower", "Doesn't Require Blower"])
-        }
-        section ("Wired Thermostat") {
-            input "wired_tstat", "capability.thermostat", required: false, title: "Thermostat wired to Equipment (not required)"
+            input(name: "equip_type", type: "enum", required: true, multiple: false, title: "Heating and Cooling Equipment", submitOnChange: true,
+                  options: ["Furnace only","Air Conditioning only","Furnace and Air Conditioning"])
+                      // "Heat Pump only","Heat Pump with Emergency Heat","Heat Pump with Furnace"])
+            if (equip_type) {
+                if (equip_type == "Furnace only" ) {
+                    input(name: "heat_type", type: "enum", required: true, title: "Heating Equipment Type", options: ["Single stage","Two stage"])
+                }
+                if (equip_type == "Air Conditioning only" ) {
+                    input(name: "cool_type", type: "enum", required: true, title: "Cooling Equipment Type", options: ["Single stage","Two stage"])
+                    input "cool_dehum_mode", "bool", required: true, title: "Cooling equipment has dehumidify mode", default: false
+                }
+                if (equip_type == "Furnace and Air Conditioning" ) {
+                    input(name: "heat_type", type: "enum", required: true, title: "Heating Equipment Type", options: ["Single stage","Two stage"])
+                    input(name: "cool_type", type: "enum", required: true, title: "Cooling Equipment Type", options: ["Single stage","Two stage"])
+                    input "cool_dehum_mode", "bool", required: true, title: "Cooling equipment has dehumidify mode", default: false
+                }
+            }
+            input(name: "vent_type", type: "enum", required: true, title: "Ventilation Equipment Type",
+                  options: ["None", "Requires Blower", "Doesn't Require Blower"])
+            input(name: "humidifer_type", type: "enum", required: true, title: "Humidifier Type",
+                  options: ["None", "Separate from HVAC ductwork", "Requires Heat", "Requires Fan"])
+            input(name: "dehumidifer_type", type: "enum", required: true, title: "Dehumidifier Type",
+                  options: ["None", "Separate from HVAC ductwork", "Outputs to Supply Plenum", "Outputs to Return Plenum"])
         }
     }
-    page(name: "pageTwo", title: "Equipment Data", install: true, uninstall: true)
+    page(name: "pageTwo", title: "Equipment Data", nextPage: "pageThree", uninstall: true)
+    page(name: "pageThree", title: "Control Rules", nextPage: "pageFour", uninstall: true)
+    page(name: "pageFour", title: "Zones", install: true, uninstall: true)
 }
 
 def pageTwo() {
     dynamicPage(name: "pageTwo") {
-        section ("Equipment Data") {
-            switch ("$heat_type") {
-                case "Single stage":
-                    input "cfmW1", "number", required: true, title: "Airflow for heating (cfm)", range: "200 . . 3000"
-                    break
-                case "Two stage":
-                    input "cfmW1", "number", required: true, title: "Airflow for heating stage 1 (cfm)", range: "200 . . 3000"
-                    input "cfmW2", "number", required: true, title: "Airflow for heating stage 2 (cfm)", range: "200 . . 3000"
-                    break
+        section ("Blower Data") {
+            switch ("$equip_type") {
+                case "Furnace only":
+                case "Furnace and Air Conditioning":
+                    switch ("$heat_type") {
+                        case "Single stage":
+                            input "cfmW1", "number", required: true, title: "Airflow for heating (cfm)", range: "200 . . 3000"
+                            break
+                        case "Two stage":
+                            input "cfmW1", "number", required: true, title: "Airflow for heating stage 1 (cfm)", range: "200 . . 3000"
+                            input "cfmW2", "number", required: true, title: "Airflow for heating stage 2 (cfm)", range: "200 . . 3000"
+                            break
+                    }
             }
-            switch ("$cool_type") {
-                case "Single stage":
-                    input "cfmY1", "number", required: true, title: "Airflow for cooling (cfm)", range: "200 . . 3000"
-                    break
-                case "Two stage":
-                    input "cfmY1", "number", required: true, title: "Airflow for cooling stage 1 (cfm)", range: "200 . . 3000"
-                    input "cfmY2", "number", required: true, title: "Airflow for cooling stage 2 (cfm)", range: "200 . . 3000"
-                    break
+            switch ("$equip_type") {
+                case "Air Conditioning only":
+                case "Furnace and Air Conditioning":
+                    switch ("$cool_type") {
+                        case "Single stage":
+                            input "cfmY1", "number", required: true, title: "Airflow for cooling (cfm)", range: "200 . . 3000"
+                            break
+                        case "Two stage":
+                            input "cfmY1", "number", required: true, title: "Airflow for cooling stage 1 (cfm)", range: "200 . . 3000"
+                            input "cfmY2", "number", required: true, title: "Airflow for cooling stage 2 (cfm)", range: "200 . . 3000"
+                            break
+                    }
             }
             input "cfmG", "number", required: true, title: "Airflow for fan only (cfm)", range: "200 . . 3000"
+            switch ("$dehumidifer_type") {
+                case "Outputs to Supply Plenum":
+                    input "cfmDeHum", "number", required: true, title: "Airflow for dehumidifier (cfm)", range: "100 . . 3000"
+            }
         }
+        humidity_required = false
         section ("Equipment Control Switches") {
-            switch ("$heat_type") {
-                case "Single stage":
-                    input "W1", "capability.switch", required: true, title: "Command Heat"
-                    break
-                case "Two stage":
-                    input "W1", "capability.switch", required: true, title: "Command Heat stage 1"
-                    input "W2", "capability.switch", required: true, title: "Command Heat stage 2"
-                    break
+            switch ("$equip_type") {
+                case "Furnace only":
+                case "Furnace and Air Conditioning":
+                    switch ("$heat_type") {
+                        case "Single stage":
+                            input "W1", "capability.switch", required: true, title: "Command Heat (probably labeled W/W1 on furnace)"
+                            break
+                        case "Two stage":
+                            input "W1", "capability.switch", required: true, title: "Command Heat stage 1 (probably labeled W/W1 on furnace)"
+                            input "W2", "capability.switch", required: true, title: "Command Heat stage 2 (probably labeled W2 on furnace)"
+                            break
+                    }
             }
-            switch ("$cool_type") {
-                case "Single stage":
-                    input "Y1", "capability.switch", required: true, title: "Command Cooling"
-                    break
-                case "Two stage":
-                    input "Y1", "capability.switch", required: true, title: "Command Cooling stage 1"
-                    input "Y2", "capability.switch", required: true, title: "Command Cooling stage 2"
-                    break
+            switch ("$equip_type") {
+                case "Air Conditioning only":
+                case "Furnace and Air Conditioning":
+                    switch ("$cool_type") {
+                        case "Single stage":
+                            input "Y1", "capability.switch", required: true, title: "Command Cooling (probably labeled Y/Y2 on furnace)"
+                            break
+                        case "Two stage":
+                            input "Y1", "capability.switch", required: true, title: "Command Cooling stage 1 (probably labeled Y1 on furnace)"
+                            input "Y2", "capability.switch", required: true, title: "Command Cooling stage 2 (probably laeled Y/Y2 on furnace)"
+                            break
+                    }
+                    if (cool_dehum_mode) {
+                        input "cool_dehum", "capability.switch", required: true, title: "Command Dehumidify mode"
+                    }
             }
-            if (wired_tstat) {
-                input "fan_by_wired_tstat", "bool", required: true, title: "Wired Thermostat Controls Fan", default: false, submitOnChange: true
-                if (!fan_by_wired_tstat) {
-                    input "G", "capability.switch", required:true, title: "Command Fan"
-                }
-            } else {
-                input "G", "capability.switch", required:true, title: "Command Fan"
-            }
+            input "G", "capability.switch", required:true, title: "Command Fan (probably labeled G on furnace)"
             switch ("$vent_type") {
                 case "Requires Blower":
                 case "Doesn't Require Blower":
                     input "V", "capability.switch", required:true, title: "Command Ventilation Equipment"
             }
-            input "over_pressure", "capability.switch", required:false, title: "Excessive Pressure Indicator (optional)"
+            switch ("$humidifer_type") {
+                case "Separate from HVAC ductwork":
+                case "Requires Heat":
+                case "Requires Fan":
+                    input "Hum", "capability.switch", required:true, title: "Command Humidifier"
+                    humidity_required = true
+            }
+            switch ("$dehumidifer_type") {
+                case "Separate from HVAC ductwork":
+                case "Outputs to Supply Plenum":
+                case "Outputs to Return Plenum":
+                    input "Dehum", "capability.switch", required:true, title: "Command Dehumidifier"
+                    humidity_required = true
+            }
         }
+        section ("Sensors") {
+            input "outdoor_temp", "capability.temperatureMeasurement", required: false, title: "Outdoor temperature sensor (optional)"
+            if (humidity_required) {
+                input "indoor_humidity", "capability.relativeHumidityMeasurement", required: true, title: "Indoor humidity sensor"
+            } else {
+                input "indoor_humidity", "capability.relativeHumidityMeasurement", required: false, title: "Indoor humidity sensor (optional)"
+            }
+            input "over_pressure", "capability.switch", required:false, title: "Excessive Pressure Indicator (optional)"
+            input "wired_tstat", "capability.thermostat", required: false, title: "Thermostat wired to Equipment (optional)"
+        }
+    }
+}
+
+def pageThree() {
+    dynamicPage(name: "pageThree") {
         section ("Control Parameters") {
-            mode_change_delay = 10
-            switch ("$heat_type") {
-                case "Single stage":
-                case "Two stage":
-                switch ("$cool_type") {
-                    case "Single stage":
-                    case "Two stage":
-                        input "mode_change_delay", "number", required: true, title: "Minimum time between heating and cooling (minutes)", range: "10 . . 300"
-                }
+            switch ("$equip_type") {
+                case "Furnace and Air Conditioning":
+                    input "mode_change_delay", "number", required: true, title: "Minimum time between heating and cooling (minutes)", range: "10 . . 300"
             }
-            switch ("$heat_type") {
-                case "Two stage":
-                    input "heat_stage2_delay", "number", required: true, title: "Time in stage 1 heating to trigger stage 2 (minutes)", range: "0 . . 300", default: "30"
-                    input "heat_stage2_deltat", "number", required: true, title: "Temperature difference from setpoint to trigger stage 2 heating", range: "1 . . 100", default: "2"
-                case "Single stage":
-                    input "heat_min_runtime", "number", required: true, title: "Minimum Heating Runtime (minutes)", range: "1 . . 30", default: "10"
-                    input "heat_min_idletime", "number", required: true, title: "Minimum Heating Idle Time (minutes)", range: "1 . . 30", default: "5"
-                    break
+            switch ("$equip_type") {
+                case "Furnace only":
+                case "Furnace and Air Conditioning":
+                    switch ("$heat_type") {
+                        case "Two stage":
+                            if (outdoor_temp) {
+                                input (name:"heat_stage2_criteria", type: "enum", required: false, title: "Criteria for using high stage heat",
+                                    options: ["Runtime in low stage","Setpoint/Temp difference","Total heat demand threshold","When a switch in on","Outdoor temp"],
+                                    submitOnChange: true, multiple: true)
+                            } else {
+                                input (name:"heat_stage2_criteria", type: "enum", required: false, title: "Criteria for using high stage heat",
+                                    options: ["Runtime in low stage","Setpoint/Temp difference","Total heat demand threshold","When a switch in on"],
+                                    submitOnChange: true, multiple: true)
+                            }
+                            if (heat_stage2_criteria) {
+                                if (heat_stage2_criteria.findAll { it == "Runtime in low stage" }) {
+                                    input "heat_stage2_delay", "number", required: true, title: "Time in stage 1 heating to trigger stage 2 (minutes)", range: "0 . . 300", default: "30"
+                                }
+                                if (heat_stage2_criteria.findAll { it == "Setpoint/Temp difference" }) {
+                                    input "heat_stage2_delta", "number", required: true, title: "Setpoint/Temp difference to trigger stage 2 heating", range: "1 . . 100", default: "2"
+                                }
+                                if (heat_stage2_criteria.findAll { it == "Total heat demand threshold" }) {
+                                    input "heat_stage2_threshold", "number", required: true, title: "Heat demand to trigger stage 2 heating (cfm)", range: "500 . . 3000", default: "2000"
+                                }
+                                if (heat_stage2_criteria.findAll { it == "When a switch in on" }) {
+                                    input "heat_stage2_switch", "capability.switch", required: true, title: "Switch for using high stage heat"
+                                }
+                                if (heat_stage2_criteria.findAll { it == "Outdoor temp" }) {
+                                    input "heat_stage2_outdoor_threshold", "number", required: true, title: "Temperature below which high stage heat is used"
+                                }
+                                if (heat_stage2_criteria.size() > 1) {
+                                    input "heat_stage2_and", "bool", required: true, title: "Require ALL conditions?", default: false
+                                }
+                            }
+                        case "Single stage":
+                            input "heat_min_runtime", "number", required: true, title: "Minimum Heating Runtime (minutes)", range: "1 . . 30", default: "10"
+                            input "heat_min_idletime", "number", required: true, title: "Minimum Heating Idle Time (minutes)", range: "1 . . 30", default: "5"
+                            break
+                    }
             }
-            switch ("$cool_type") {
-                case "Two stage":
-                    input "cool_stage2_delay", "number", required: true, title: "Time in stage 1 cooling to trigger stage 2 (minutes)", range: "0 . . 300", default: "30"
-                    input "cool_stage2_deltat", "number", required: true, title: "Temperature difference from setpoint to trigger stage 2 cooling", range: "1 . . 100", default: "2"
-                case "Single stage":
-                    input "cool_min_runtime", "number", required: true, title: "Minimum Cooling Runtime (minutes)", range: "5 . . 30", default: "10"
-                    input "cool_min_idletime", "number", required: true, title: "Minimum Cooling Idle Time (minutes)", range: "5 . . 30", default: "5"
-                    break
+            switch ("$equip_type") {
+                case "Air Conditioning only":
+                case "Furnace and Air Conditioning":
+                    switch ("$cool_type") {
+                        case "Two stage":
+                            if (outdoor_temp) {
+                                input (name:"cool_stage2_criteria", type: "enum", required: false, title: "Criteria for using high stage cooling",
+                                    options: ["Runtime in low stage","Setpoint/Temp difference","Total cool demand threshold","When a switch in on","Outdoor temp"],
+                                    submitOnChange: true, multiple: true)
+                            } else {
+                                input (name:"cool_stage2_criteria", type: "enum", required: false, title: "Criteria for using high stage cooling",
+                                    options: ["Runtime in low stage","Setpoint/Temp difference","Total cool demand threshold","When a switch in on"],
+                                    submitOnChange: true, multiple: true)
+                            }
+                            if (cool_stage2_criteria) {
+                                if (cool_stage2_criteria.findAll { it == "Runtime in low stage" }) {
+                                    input "cool_stage2_delay", "number", required: true, title: "Time in stage 1 cooling to trigger stage 2 (minutes)", range: "0 . . 300", default: "30"
+                                }
+                                if (cool_stage2_criteria.findAll { it == "Setpoint/Temp difference" }) {
+                                    input "cool_stage2_delta", "number", required: true, title: "Setpoint/Temp difference to trigger stage 2 cooling", range: "1 . . 100", default: "2"
+                                }
+                                if (cool_stage2_criteria.findAll { it == "Total cool demand threshold" }) {
+                                    input "cool_stage2_threshold", "number", required: true, title: "Cooling demand to trigger stage 2 cooling (cfm)", range: "500 . . 3000", default: "2000"
+                                }
+                                if (cool_stage2_criteria.findAll { it == "When a switch in on" }) {
+                                    input "cool_stage2_switch", "capability.switch", required: true, title: "Switch for using high stage cooling"
+                                }
+                                if (cool_stage2_criteria.findAll { it == "Outdoor temp" }) {
+                                    input "cool_stage2_outdoor_threshold", "number", required: true, title: "Temperature above which high stage cooling is used"
+                                }
+                                if (cool_stage2_criteria.size() > 1) {
+                                    input "cool_stage2_and", "bool", required: true, title: "Require ALL conditions?", default: false
+                                }
+                            }
+                        case "Single stage":
+                            input "cool_min_runtime", "number", required: true, title: "Minimum Cooling Runtime (minutes)", range: "1 . . 30", default: "10"
+                            input "cool_min_idletime", "number", required: true, title: "Minimum Cooling Idle Time (minutes)", range: "1 . . 30", default: "5"
+                            break
+                    }
             }
             switch ("$vent_type") {
                 case "Requires Blower":
@@ -142,18 +260,40 @@ def pageTwo() {
                     input "vent_control", "capability.switchLevel", required:true, title: "Ventilation Control - Use dimmer to set percent runtime and on/off"
                     input "vent_force", "capability.switch", required:false, title: "Spot Ventilation Control - turn on to temporarily force ventilation on (e.g. bathroom vent)"
             }
+            switch ("$humidifer_type") {
+                case "Separate from HVAC ductwork":
+                case "Requires Heat":
+                case "Requires Fan":
+                    input "humidifier_target", "capability.switchLevel", required:true, title: "Minimum Relative Humidity Target (generally Heating Season)"
+            }
+            switch ("$dehumidifer_type") {
+                case "Separate from HVAC ductwork":
+                case "Outputs to Supply Plenum":
+                case "Outputs to Return Plenum":
+                    input "dehumidifier_target", "capability.switchLevel", required:true, title: "Maximum Relative Humidity Target (generally Cooling Season)"
+            }
+        }
+        section ("Refresh intervals to recover from missed signals") {
             // time interval for polling in case any signals missed
             input(name:"output_refresh_interval", type:"enum", required: true, title: "Output refresh", options: ["None","Every 5 minutes","Every 10 minutes",
                                                                                                                  "Every 15 minutes","Every 30 minutes"]) 
             input(name:"input_refresh_interval", type:"enum", required: true, title: "Input refresh", options: ["None","Every 5 minutes","Every 10 minutes",
                                                                                                                  "Every 15 minutes","Every 30 minutes"]) 
-            input "status", "device.HVACZoningStatus", required: false, title: "Status Reporting Device (Optional)"
+        }
+    }
+}
+
+def pageFour() {
+    dynamicPage(name: "pageFour") {
+        section ("Zones") {
+            app(name: "zones", appName: "HVAC Zone", namespace: "rbaldwi3", title: "Create New Zone", multiple: true, submitOnChange: true)
         }
     }
 }
 
 def installed() {
     // log.debug("In installed()")
+    addChildDevice("rbaldwi3", "HVAC Zone Status", "HVACZoning_${app.id}", [isComponent: true, label: app.label])
     atomicState.equip_state = "Idle"
     atomicState.vent_state = "Off"
     atomicState.fan_state = "Off"
@@ -170,16 +310,46 @@ def installed() {
     initialize()
 }
 
+def uninstalled() {
+    // log.debug("In uninstalled()")
+}
+
 def updated() {
-    log.debug("In updated()")
+    // log.debug("In updated()")
     unsubscribe()
     unschedule()
+    // reschedule equipment_state_timeout if necessary
+    switch ("$atomicState.equip_state") {
+        case "IdleH":
+            Integer next_transition = (mode_change_delay+heat_min_idletime)*60 - (now()-atomicState.last_heating_stop)/1000
+            runIn(next_transition, equipment_state_timeout, [misfire: "ignore"])
+            break
+        case "IdleC":
+            Integer next_transition = (mode_change_delay+cool_min_idletime)*60 - (now()-atomicState.last_cooling_stop)/1000
+            runIn(next_transition, equipment_state_timeout, [misfire: "ignore"])
+            break
+        case "PauseH":
+            Integer next_transition = heat_min_idletime*60 - (now()-atomicState.last_heating_stop)/1000
+            runIn(next_transition, equipment_state_timeout, [misfire: "ignore"])
+            break
+        case "PauseC":
+            Integer next_transition = cool_min_idletime*60 - (now()-atomicState.last_cooling_stop)/1000
+            runIn(next_transition, equipment_state_timeout, [misfire: "ignore"])
+            break
+        case "HeatingL":
+            Integer next_transition = heat_min_runtime*60 - (now()-atomicState.last_heating_start)/1000
+            runIn(next_transition, equipment_state_timeout, [misfire: "ignore"])
+            break
+        case "CoolingL":
+            Integer next_transition = cool_min_runtime*60 - (now()-atomicState.last_cooling_start)/1000
+            runIn(next_transition, equipment_state_timeout, [misfire: "ignore"])
+            break
+    }
     initialize()
 }
 
 def initialize() {
-    log.debug("In initialize()")
-    child_updated()
+    // log.debug("In initialize()")
     // Subscribe to state changes for inputs and set state variables to reflect their current values
     switch ("$vent_type") {
         case "Requires Blower":
@@ -209,20 +379,27 @@ def initialize() {
                 }
             }
     }
+    switch ("$humidifer_type") {
+        case "Separate from HVAC ductwork":
+        case "Requires Heat":
+        case "Requires Fan":
+            subscribe(humidifier_target, "switch", update_humid_targets)
+            subscribe(humidifier_target, "level", update_humid_targets)
+    }
+    switch ("$dehumidifer_type") {
+        case "Separate from HVAC ductwork":
+        case "Outputs to Supply Plenum":
+        case "Outputs to Return Plenum":
+            subscribe(dehumidifier_target, "switch", update_humid_targets)
+            subscribe(dehumidifier_target, "level", update_humid_targets)
+    }
+    update_humid_targets()
     if (over_pressure) {
         subscribe(over_pressure, "switch.on", over_pressure_stage1)
         atomicState.over_pressure_time = now() - 5*60*1000
     }
-    if (wired_tstat) {
-        subscribe(wired_tstat, "thermostatOperatingState", wired_tstatHandler)
-        wired_tstatHandler() // sets wired mode and calls zone_call_changed()
-    } else {
-        atomicState.wired_mode = "none"
-        // call zone_call_changed() to put outputs in a state consistent with the current inputs
-        zone_call_changed()
-    }
     // schedule any periodic refreshes
-    runEvery30Minutes(check_for_lockup)
+    runEvery30Minutes(periodic_check)
     switch ("$output_refresh_interval") {
         case "None":
             break
@@ -255,32 +432,125 @@ def initialize() {
             runEvery30Minutes(refresh_inputs)
             break
     }
+    atomicState.off_capacity = 0
+    atomicState.heat_demand = 0
+    atomicState.heat_accept = 0
+    atomicState.cool_demand = 0
+    atomicState.cool_accept = 0
+    atomicState.fan_demand = 0
+    atomicState.fan_accept = 0
+    atomicState.dehum_accept = 0
+    atomicState.humid_accept = 0
+    tmplist = []
+    def zones = getChildApps()
+    zones.each { z ->
+        if (subzone_ok("", z.label)) {
+            tmplist << z.label
+            status_device = z.get_status_device()
+            def off_capacity_value = status_device.currentValue("off_capacity")
+            atomicState.off_capacity += off_capacity_value
+            def heat_demand_value = status_device.currentValue("heat_demand")
+            atomicState.heat_demand += heat_demand_value
+            subscribe(status_device, "heat_demand", child_heat_demand_Handler)
+            def heat_accept_value = status_device.currentValue("heat_accept")
+            atomicState.heat_accept += heat_accept_value
+            subscribe(status_device, "heat_accept", child_heat_accept_Handler)
+            def cool_demand_value = status_device.currentValue("cool_demand")
+            atomicState.cool_demand += cool_demand_value
+            subscribe(status_device, "cool_demand", child_cool_demand_Handler)
+            def cool_accept_value = status_device.currentValue("cool_accept")
+            atomicState.cool_accept += cool_accept_value
+            subscribe(status_device, "cool_accept", child_cool_accept_Handler)
+            def fan_demand_value = status_device.currentValue("fan_demand")
+            atomicState.fan_demand += fan_demand_value
+            subscribe(status_device, "fan_demand", child_fan_demand_Handler)
+            def fan_accept_value = status_device.currentValue("fan_accept")
+            atomicState.fan_accept += fan_accept_value
+            subscribe(status_device, "fan_accept", child_fan_accept_Handler)
+            def dehum_accept_value = status_device.currentValue("dehum_accept")
+            atomicState.dehum_accept += dehum_accept_value
+            subscribe(status_device, "dehum_accept", child_dehum_accept_Handler)
+            def humid_accept_value = status_device.currentValue("humid_accept")
+            atomicState.humid_accept += humid_accept_value
+            subscribe(status_device, "humid_accept", child_humid_accept_Handler)
+        }
+    }
+    atomicState.main_zones = tmplist
+    status_device = getChildDevice("HVACZoning_${app.id}")
+    status_device.set_off_capacity(atomicState.off_capacity)
+    status_device.set_heat_demand(atomicState.heat_demand)
+    status_device.set_heat_accept(atomicState.heat_accept)
+    status_device.set_cool_demand(atomicState.cool_demand)
+    status_device.set_cool_accept(atomicState.cool_accept)
+    status_device.set_fan_demand(atomicState.fan_demand)
+    status_device.set_fan_accept(atomicState.fan_accept)
+    status_device.set_dehum_accept(atomicState.dehum_accept)
+    status_device.set_humid_accept(atomicState.humid_accept)
+    if (wired_tstat) {
+        subscribe(wired_tstat, "thermostatOperatingState", wired_tstatHandler)
+        wired_tstatHandler() // sets wired mode and calls zone_call_changed()
+    } else {
+        atomicState.wired_mode = "none"
+        // call update_equipment_state to put outputs in a state consistent with the current inputs
+        update_equipment_state()
+    }
+    if (heat_stage2_criteria) {
+        if (heat_stage2_criteria.findAll { it == "When a switch in on" }) {
+            subscribe(heat_stage2_switch, "switch", stage2_heat)
+        }
+        if (heat_stage2_criteria.findAll { it == "Outdoor temp" }) {
+            subscribe(outdoor_temp, "temperature", stage2_heat)
+        }
+    }
+    if (cool_stage2_criteria) {
+        if (cool_stage2_criteria.findAll { it == "When a switch in on" }) {
+            subscribe(cool_stage2_switch, "switch", stage2_cool)
+        }
+        if (cool_stage2_criteria.findAll { it == "Outdoor temp" }) {
+            subscribe(outdoor_temp, "temperature", stage2_cool)
+        }
+    }
 }
 
 def refresh_outputs() {
-    log.debug("In refresh_outputs()")
-    log.debug("state is $atomicState.equip_state")
+    // log.debug("In refresh_outputs() state is $atomicState.equip_state")
     switch ("$atomicState.equip_state") {
         case "Heating": 
         case "HeatingL": 
-            W1.on()
-            if (W2) {
-                stage2_heat()
-            }
-            if (Y1) {
-                Y1.off()
-                stage2_cool_off()
+            switch ("$equip_type") {
+                case "Furnace and Air Conditioning":
+                    switch ("$cool_type") {
+                        case "Two stage":
+                            stage2_cool_off()
+                        case "Single stage":
+                            Y1.off()
+                    }
+                case "Furnace only":
+                    switch ("$heat_type") {
+                        case "Two stage":
+                            stage2_heat()
+                        case "Single stage":
+                            W1.on()
+                    }
             }
             break
         case "Cooling": 
         case "CoolingL": 
-            Y1.on()
-            if (Y2) {
-                stage2_cool()
-            }
-            if (W1) {
-                W1.off()
-                stage2_heat_off()
+            switch ("$equip_type") {
+                case "Furnace and Air Conditioning":
+                    switch ("$heat_type") {
+                        case "Two stage":
+                            stage2_heat_off()
+                        case "Single stage":
+                            W1.off()
+                    }
+                case "Air Conditioning only":
+                    switch ("$cool_type") {
+                        case "Two stage":
+                            stage2_cool()
+                        case "Single stage":
+                            Y1.on()
+                    }
             }
             break
         case "Idle": 
@@ -288,13 +558,25 @@ def refresh_outputs() {
         case "PauseH": 
         case "IdleC": 
         case "PauseC": 
-            if (Y1) {
-                Y1.off()
-                stage2_cool_off()
+            switch ("$equip_type") {
+                case "Furnace only":
+                case "Furnace and Air Conditioning":
+                    switch ("$heat_type") {
+                        case "Two stage":
+                            stage2_heat_off()
+                        case "Single stage":
+                            W1.off()
+                    }
             }
-            if (W1) {
-                W1.off()
-                stage2_heat_off()
+            switch ("$equip_type") {
+                case "Air Conditioning only":
+                case "Furnace and Air Conditioning":
+                    switch ("$heat_type") {
+                        case "Two stage":
+                            stage2_cool_off()
+                        case "Single stage":
+                            Y1.off()
+                    }
             }
             break
     }
@@ -312,21 +594,26 @@ def refresh_outputs() {
                 break
         }
     }
-    switch ("$atomicState.fan_state") {
+    switch ("$atomicState.humid_state") {
         case "Off": 
-            switch_fan_off()
+            if (Hum) { Hum.off() }
+            if (Dehum) { Dehum.off() }
             break
-        case "On_for_cooling": 
-        case "On_for_vent": 
-        case "On_by_request": 
-            switch_fan_on()
+        case "Humidify": 
+            Hum.on()
+            if (Dehum) { Dehum.off() }
+            break
+        case "Dehumidify": 
+            if (Hum) { Hum.off() }
+            Dehum.on()
             break
     }
-    update_fan_zones()
+    update_fan_state()
+    update_zones()
 }
 
 def refresh_inputs() {
-    log.debug("In refresh_inputs()")
+    // log.debug("In refresh_inputs()")
     if (vent_control.hasCapability("Refresh")) {
         vent_control.refresh()
     }
@@ -372,6 +659,237 @@ def refresh_inputs() {
                     }
             }
     }
+    update_humid_targets()
+    new_heat_demand = 0
+    new_heat_accept = 0
+    new_cool_demand = 0
+    new_cool_accept = 0
+    new_fan_demand = 0
+    new_fan_accept = 0
+    new_dehum_accept = 0
+    new_humid_accept = 0
+    def zones = getChildApps()
+    zones.each { z ->
+        if (atomicState.main_zones.findAll { it == z.label }) {
+            status_device = z.get_status_device()
+            def zone_value = status_device.currentValue("heat_demand")
+            new_heat_demand += zone_value
+            zone_value = status_device.currentValue("heat_accept")
+            new_heat_accept += zone_value
+            zone_value = status_device.currentValue("cool_demand")
+            new_cool_demand += zone_value
+            zone_value = status_device.currentValue("cool_accept")
+            new_cool_accept += zone_value
+            zone_value = status_device.currentValue("fan_demand")
+            new_fan_demand += zone_value
+            zone_value = status_device.currentValue("fan_accept")
+            new_fan_accept += zone_value
+            zone_value = status_device.currentValue("dehum_accept")
+            new_dehum_accept += zone_value
+            zone_value = status_device.currentValue("humid_accept")
+            new_humid_accept += zone_value
+        }
+    }
+    change = false
+    if ((new_heat_demand != atomicState.heat_demand) || (new_heat_accept != atomicState.heat_accept) ||
+        (new_cool_demand != atomicState.cool_demand) || (new_cool_accept != atomicState.cool_accept) || (new_fan_demand != atomicState.fan_demand)) {
+        status_device = getChildDevice("HVACZoning_${app.id}")
+        atomicState.heat_demand = new_heat_demand
+        status_device.set_heat_demand(atomicState.heat_demand)
+        atomicState.heat_accept = new_heat_accept
+        status_device.set_heat_accept(atomicState.heat_accept)
+        atomicState.cool_demand = new_cool_demand
+        status_device.set_cool_demand(atomicState.cool_demand)
+        atomicState.cool_accept = new_cool_accept
+        status_device.set_cool_accept(atomicState.cool_accept)
+        atomicState.fan_demand = new_fan_demand
+        status_device.set_fan_demand(atomicState.fan_demand)
+        update_equipment_state()
+        change = true
+    }
+    if (new_fan_accept != atomicState.fan_accept) {
+        atomicState.fan_accept = new_fan_accept
+        status_device = getChildDevice("HVACZoning_${app.id}")
+        status_device.set_fan_accept(atomicState.fan_accept)
+        change = true
+    }
+    if (new_dehum_accept != atomicState.dehum_accept) {
+        atomicState.dehum_accept = new_dehum_accept
+        status_device = getChildDevice("HVACZoning_${app.id}")
+        status_device.set_dehum_accept(atomicState.dehum_accept)
+        change = true
+    }
+    if (new_humid_accept != atomicState.humid_accept) {
+        atomicState.humid_accept = new_humid_accept
+        status_device = getChildDevice("HVACZoning_${app.id}")
+        status_device.set_humid_accept(atomicState.humid_accept)
+        change = true
+    }
+    if (change) {
+        update_fan_state()
+        update_zones()
+    }
+}
+
+def child_heat_demand_Handler(evt=NULL) {
+    // log.debug("In child_heat_demand_Handler()")
+    new_value = 0
+    def zones = getChildApps()
+    zones.each { z ->
+        if (atomicState.main_zones.findAll { it == z.label }) {
+            status_device = z.get_status_device()
+            def zone_value = status_device.currentValue("heat_demand")
+            new_value += zone_value
+        }
+    }
+    if (new_value != atomicState.heat_demand) {
+        atomicState.heat_demand = new_value
+        status_device = getChildDevice("HVACZoning_${app.id}")
+        status_device.set_heat_demand(atomicState.heat_demand)
+        runIn(5, update_equipment_state, [misfire: "ignore"])
+    }
+}
+
+def child_heat_accept_Handler(evt=NULL) {
+    // log.debug("In child_heat_accept_Handler()")
+    new_value = 0
+    def zones = getChildApps()
+    zones.each { z ->
+        if (atomicState.main_zones.findAll { it == z.label }) {
+            status_device = z.get_status_device()
+            def zone_value = status_device.currentValue("heat_accept")
+            new_value += zone_value
+        }
+    }
+    if (new_value != atomicState.heat_accept) {
+        atomicState.heat_accept = new_value
+        status_device = getChildDevice("HVACZoning_${app.id}")
+        status_device.set_heat_accept(atomicState.heat_accept)
+        runIn(5, update_equipment_state, [misfire: "ignore"])
+    }
+}
+
+def child_cool_demand_Handler(evt=NULL) {
+    // log.debug("In child_cool_demand_Handler()")
+    new_value = 0
+    def zones = getChildApps()
+    zones.each { z ->
+        if (atomicState.main_zones.findAll { it == z.label }) {
+            status_device = z.get_status_device()
+            def zone_value = status_device.currentValue("cool_demand")
+            new_value += zone_value
+        }
+    }
+    if (new_value != atomicState.cool_demand) {
+        atomicState.cool_demand = new_value
+        status_device = getChildDevice("HVACZoning_${app.id}")
+        status_device.set_cool_demand(atomicState.cool_demand)
+        runIn(5, update_equipment_state, [misfire: "ignore"])
+    }
+}
+
+def child_cool_accept_Handler(evt=NULL) {
+    // log.debug("In child_cool_accept_Handler()")
+    new_value = 0
+    def zones = getChildApps()
+    zones.each { z ->
+        if (atomicState.main_zones.findAll { it == z.label }) {
+            status_device = z.get_status_device()
+            def zone_value = status_device.currentValue("cool_accept")
+            new_value += zone_value
+        }
+    }
+    if (new_value != atomicState.cool_accept) {
+        atomicState.cool_accept = new_value
+        status_device = getChildDevice("HVACZoning_${app.id}")
+        status_device.set_cool_accept(atomicState.cool_accept)
+        runIn(5, update_equipment_state, [misfire: "ignore"])
+    }
+}
+
+def child_fan_demand_Handler(evt=NULL) {
+    // log.debug("In child_fan_demand_Handler()")
+    new_value = 0
+    def zones = getChildApps()
+    zones.each { z ->
+        if (atomicState.main_zones.findAll { it == z.label }) {
+            status_device = z.get_status_device()
+            def zone_value = status_device.currentValue("fan_demand")
+            new_value += zone_value
+        }
+    }
+    if (new_value != atomicState.fan_demand) {
+        atomicState.fan_demand = new_value
+        status_device = getChildDevice("HVACZoning_${app.id}")
+        status_device.set_fan_demand(atomicState.fan_demand)
+        runIn(5, update_equipment_state, [misfire: "ignore"])
+    }
+}
+
+def child_fan_accept_Handler(evt=NULL) {
+    // log.debug("In child_fan_accept_Handler()")
+    new_value = 0
+    def zones = getChildApps()
+    zones.each { z ->
+        if (atomicState.main_zones.findAll { it == z.label }) {
+            status_device = z.get_status_device()
+            def zone_value = status_device.currentValue("fan_accept")
+            new_value += zone_value
+        }
+    }
+    if (new_value != atomicState.fan_accept) {
+        atomicState.fan_accept = new_value
+        status_device = getChildDevice("HVACZoning_${app.id}")
+        status_device.set_fan_accept(atomicState.fan_accept)
+        current_state = status_device.currentValue("current_state")
+        if ("$current_state.value" == "Vent") {
+            runIn(5, update_zones, [misfire: "ignore"])
+        }
+    }
+}
+
+def child_dehum_accept_Handler(evt=NULL) {
+    // log.debug("In child_dehum_accept_Handler()")
+    new_value = 0
+    def zones = getChildApps()
+    zones.each { z ->
+        if (atomicState.main_zones.findAll { it == z.label }) {
+            status_device = z.get_status_device()
+            def zone_value = status_device.currentValue("dehum_accept")
+            new_value += zone_value
+        }
+    }
+    if (new_value != atomicState.dehum_accept) {
+        atomicState.dehum_accept = new_value
+        status_device = getChildDevice("HVACZoning_${app.id}")
+        status_device.set_dehum_accept(atomicState.dehum_accept)
+        current_state = status_device.currentValue("current_state")
+        if ("$current_state.value" == "Dehum") {
+            runIn(5, update_zones, [misfire: "ignore"])
+        }
+    }
+}
+
+def child_humid_accept_Handler(evt=NULL) {
+    // log.debug("In child_humid_accept_Handler()")
+    new_value = 0
+    def zones = getChildApps()
+    zones.each { z ->
+        if (atomicState.main_zones.findAll { it == z.label }) {
+            status_device = z.get_status_device()
+            def zone_value = status_device.currentValue("humid_accept")
+            new_value += zone_value
+        }
+    }
+    if (new_value != atomicState.humid_accept) {
+        atomicState.humid_accept = new_value
+        status_device = getChildDevice("HVACZoning_${app.id}")
+        status_device.set_humid_accept(atomicState.humid_accept)
+        current_state = status_device.currentValue("current_state")
+        if ("$current_state.value" == "Humid") {
+            runIn(5, update_zones, [misfire: "ignore"])
+        }
+    }
 }
 
 // Equipment Control Routines
@@ -387,23 +905,23 @@ def refresh_inputs() {
 // "CoolingL": which means that cooling equipment is running but has turn on recently enough that it needs to remain on even if a cooling call ends
 
 def set_equip_state(String new_state) {
-    if ((status) && ("$atomicState.equip_state" != new_state)) {
-        status.setequipState(new_state)
-    }
     atomicState.equip_state = new_state
+    status_device = getChildDevice("HVACZoning_${app.id}")
+    status_device.set_status_msg("$atomicState.equip_state, $atomicState.vent_state, $atomicState.fan_state")
 }
 
 // The variable atomicState.fan_state indicates the current state of the blower.  Possible values are:
 // "Off": blower is off
-// "On_for_cooling": blower is commanded on because cooling is being commanded (user may also be requesting and ventilation may also be underway)
-// "On_for_vent": blower is commanded on because ventilation is being commanded (user may also be requesting)
-// "On_by_request": blower is commanded on due to fan call from a zone (ventilation and cooling off)
+// "On_for_equip": blower is commanded on because cooling or heating is being commanded (user may also be requesting fan and ventilation and/or dehumidification may also be underway)
+// "On_for_vent": blower is commanded on because ventilation is being commanded (heating and cooling off, user may also be requesting fan and dehumidification may be underway)
+// "On_for_dehum": blower is commanded on because dehumidification is being commanded (heating and cooling off, user may also be requesting fan)
+// "On_for_humid": blower is commanded on because humidification is being commanded (heating and cooling off, user may also be requesting fan)
+// "On_by_request": blower is commanded on due to fan call from a zone (ventilation, heating, and cooling off)
 
 def set_fan_state(String new_state) {
-    if ((status) && ("$atomicState.fan_state" != new_state)) {
-        status.setfanState(new_state)
-    }
     atomicState.fan_state = new_state
+    status_device = getChildDevice("HVACZoning_${app.id}")
+    status_device.set_status_msg("$atomicState.equip_state, $atomicState.vent_state, $atomicState.fan_state")
 }
 
 // The variable atomicState.vent_state indicates the current state of the ventilation.  Possible values are:
@@ -418,20 +936,9 @@ def set_fan_state(String new_state) {
 // "End_Phase": which means that ventilation needs to run for the remainder of the interval in order to run enough during the present interval
 
 def set_vent_state(String new_state) {
-    if ((status) && ("$atomicState.vent_state" != new_state)) {
-        status.setventState(new_state)
-    }
     atomicState.vent_state = new_state
-}
-
-def child_updated() {
-    log.debug("In child_updated()")
-    // off_capacity is the airflow capacity of the system if all of the zones are unselected
-    atomicState.off_capacity = 0
-    def zones = getChildApps()
-    zones.each { z ->
-        atomicState.off_capacity += z.get_off_capacity();
-    }
+    status_device = getChildDevice("HVACZoning_${app.id}")
+    status_device.set_status_msg("$atomicState.equip_state, $atomicState.vent_state, $atomicState.fan_state")
 }
 
 def wired_tstatHandler(evt=NULL) {
@@ -484,92 +991,35 @@ def wired_tstatHandler(evt=NULL) {
     }
 }
 
-Boolean update_demand() {
-    log.debug("In update_demand()")
-    // heating, cooling, and fan demands come from thermostats in zones (or sometimes subzones) initiating a call
-    // the value represents the cubic feet per minute of airflow desired
-    cool_demand = 0
-    heat_demand = 0
-    fan_demand = 0
-    // heat_accept and cool_accept represent the cubic feet per minute of airflow the zone volunteers to accept (as a dump zone)
-    cool_accept = 0
-    heat_accept = 0
-    // vent demand is the cubic feet per minute that zones would accept if the system goes into ventilation mode with no heating or cooling equipment running
-    vent_demand = 0
-    def zones = getChildApps()
-    zones.each { z ->
-        cool_demand += z.get_cool_demand()
-        heat_demand += z.get_heat_demand()
-        fan_demand += z.get_fan_demand()
-        vent_demand += z.get_vent_demand()
-        cool_accept += z.get_cool_accept()
-        heat_accept += z.get_heat_accept()
-    }
-    if (wired_tstat) {
-        if (fan_by_wired_tstat) { // fan by request is disabled in this condition because we cannot distinguish a request from fan being turned on by app
-            fan_demand = 0
-        }
-        def opstate = wired_tstat.currentValue("thermostatOperatingState")
-        switch ("$opstate") {
-            case "cooling":
-                heat_demand = 0
-                break
-            case "heating":
-                cool_demand = 0
-                break
-        }
-    }
-    atomicState.vent_demand = vent_demand
-    if ((cool_demand != atomicState.cool_demand) || (heat_demand != atomicState.heat_demand) || (fan_demand != atomicState.fan_demand) ||
-        (cool_accept != atomicState.cool_accept) || (heat_accept != heat_accept)) {
-        atomicState.cool_demand = cool_demand
-        atomicState.heat_demand = heat_demand
-        atomicState.fan_demand = fan_demand
-        atomicState.cool_accept = cool_accept
-        atomicState.heat_accept = heat_accept
-        log.debug("cool_demand = $atomicState.cool_demand, heat_demand = $atomicState.heat_demand, cool_accept = $atomicState.cool_accept, heat_accept = $atomicState.heat_accept, fan_demand = $atomicState.fan_demand, vent_demand = $atomicState.vent_demand")
-        return true
-    } else {
-        return false
-    }
-}
-
 def update_equipment_state() {
-    log.debug("In zone_call_changed() - current state is $atomicState.equip_state")  
+    // log.debug("In update_equipment_state() - current state is $atomicState.equip_state")  
     // this section updates the state and, in heating and cooling modes, selects the zones and equipment
     switch ("$atomicState.equip_state") {
         case "Idle":
             if (servable_heat_call()) {
                 start_heat_run()
-                return
             } else if (servable_cool_call()) {
                 start_cool_run()
-                return
             } else {
                 update_fan_state()
-                update_fan_zones()
             }
             break
         case "IdleH":
             if (servable_heat_call()) {
                 start_heat_run()
-                return
             } else {
                 update_fan_state()
-                update_fan_zones()
             }
             break
         case "PauseH":
+        case "PauseC":
             update_fan_state()
-            update_fan_zones()
             break
         case "Heating":
             if (servable_heat_call()) {
                 update_heat_run()
-                return
             } else {
                 end_heat_run()
-                // fan state and zones will be updated after ventilation is adjusted
             }
             break
         case "HeatingL":
@@ -578,45 +1028,30 @@ def update_equipment_state() {
         case "IdleC":
             if (servable_cool_call()) {
                 start_cool_run()
-                return
             } else {
                 update_fan_state()
-                update_fan_zones()
             }
-            break
-        case "PauseC":
-            update_fan_state()
-            update_fan_zones()
             break
         case "Cooling":
             if (servable_cool_call()) {
                 update_cool_run()
-                return
             } else {
                 end_cool_run()
-                // fan state and zones will be updated after ventilation is adjusted
             }
             break
         case "CoolingL":
             update_cool_run()
-            return
     }
-}
-
-// This routine handles a change in status in a zone
-
-def zone_call_changed() {
-    log.debug("In zone_call_changed()")
-    if (update_demand()) {
-        update_equipment_state()
-    }
+    update_zones()
 }
 
 def equipment_state_timeout() {
-    log.debug("In equipment_state_timeout()")
+    // log.debug("In equipment_state_timeout()")
     switch ("$atomicState.equip_state") {
         case "Idle":
-            debug("timeout in Idle mode shouldn't happen")
+            status_device = getChildDevice("HVACZoning_${app.id}")
+            status_device.debug("timeout in Idle mode shouldn't happen")
+            log.debug("timeout in Idle mode shouldn't happen")
             break
         case "IdleH":
         case "IdleC":
@@ -642,14 +1077,18 @@ def equipment_state_timeout() {
             update_equipment_state()
             break
         case "Heating":
-            debug("timeout in Heating mode shouldn't happen")
+            status_device = getChildDevice("HVACZoning_${app.id}")
+            status_device.debug("timeout in Heating mode shouldn't happen")
+            log.debug("timeout in Heating mode shouldn't happen")
             break
         case "HeatingL":
             set_equip_state("Heating")
             update_equipment_state()
             break
         case "Cooling":
-            debug("timeout in Cooling mode shouldn't happen")
+            status_device = getChildDevice("HVACZoning_${app.id}")
+            status_device.debug("timeout in Cooling mode shouldn't happen")
+            log.debug("timeout in Cooling mode shouldn't happen")
             break
         case "CoolingL":
             set_equip_state("Cooling")
@@ -658,134 +1097,379 @@ def equipment_state_timeout() {
     }
 }
 
-def check_for_lockup() {
-    // This function runs periodically and frees the system up if a call to equipment_state_timeout somehow got missed leaving the system stuck in a state
-    log.debug("In check_for_lockup()")
+def periodic_check() {
+    // log.debug("In periodic_check()")
+    // check whether we are stuck in a state
     switch ("$atomicState.equip_state") {
         case "PauseH":
             if ((now() - atomicState.last_heating_stop) > heat_min_idletime*60*1000) {
-                if (status) {
-                    status.debug("Appears to be stuck in state $atomicState.equip_state")
-                }
+                status_device = getChildDevice("HVACZoning_${app.id}")
+                status_device.debug("Appears to be stuck in state $atomicState.equip_state")
+                log.debug("Appears to be stuck in state $atomicState.equip_state")
                 runIn(5, "equipment_state_timeout", [misfire: "ignore"])
             }
             break
         case "IdleH":
             if ((now() - atomicState.last_heating_stop) > mode_change_delay*60*1000) {
-                if (status) {
-                    status.debug("Appears to be stuck in state $atomicState.equip_state")
-                }
+                status_device = getChildDevice("HVACZoning_${app.id}")
+                status_device.debug("Appears to be stuck in state $atomicState.equip_state")
+                log.debug("Appears to be stuck in state $atomicState.equip_state")
                 runIn(5, "equipment_state_timeout", [misfire: "ignore"])
             }
             break
         case "HeatingL":
             if ((now() - atomicState.last_heating_start) > heat_min_runtime*60*1000) {
-                if (status) {
-                    status.debug("Appears to be stuck in state $atomicState.equip_state")
-                }
+                status_device = getChildDevice("HVACZoning_${app.id}")
+                status_device.debug("Appears to be stuck in state $atomicState.equip_state")
+                log.debug("Appears to be stuck in state $atomicState.equip_state")
                 runIn(5, "equipment_state_timeout", [misfire: "ignore"])
             }
             break
         case "PauseC":
             if ((now() - atomicState.last_cooling_stop) > cool_min_idletime*60*1000) {
-                if (status) {
-                    status.debug("Appears to be stuck in state $atomicState.equip_state")
-                }
+                status_device = getChildDevice("HVACZoning_${app.id}")
+                status_device.debug("Appears to be stuck in state $atomicState.equip_state")
+                log.debug("Appears to be stuck in state $atomicState.equip_state")
                 runIn(5, "equipment_state_timeout", [misfire: "ignore"])
             }
             break
         case "IdleC":
             if ((now() - atomicState.last_cooling_stop) > mode_change_delay*60*1000) {
-                if (status) {
-                    status.debug("Appears to be stuck in state $atomicState.equip_state")
-                }
+                status_device = getChildDevice("HVACZoning_${app.id}")
+                status_device.debug("Appears to be stuck in state $atomicState.equip_state")
+                log.debug("Appears to be stuck in state $atomicState.equip_state")
                 runIn(5, "equipment_state_timeout", [misfire: "ignore"])
             }
             break
         case "CoolingL":
             if ((now() - atomicState.last_cooling_start) > cool_min_runtime*60*1000) {
-                if (status) {
-                    status.debug("Appears to be stuck in state $atomicState.equip_state")
-                }
+                status_device = getChildDevice("HVACZoning_${app.id}")
+                status_device.debug("Appears to be stuck in state $atomicState.equip_state")
+                log.debug("Appears to be stuck in state $atomicState.equip_state")
                 runIn(5, "equipment_state_timeout", [misfire: "ignore"])
             }
             break
-    }   
-    if (W1) {
-        W1_value = W1.currentValue("switch")
-        switch ("$atomicState.equip_state") {
-            case "Heating":
-            case "HeatingL":
-                switch("$W1_value") {
-                    case "off":
-                        if (status) {
-                            status.debug("W1 is off in state $state.equip_state")
-                        }
-                        W1.on()
-                        update_heat_run()
-                }
-                break
-            case "Idle":
-            case "IdleH":
-            case "IdleC":
-            case "PauseH":
-            case "PauseC":
-            case "Cooling":
-            case "CoolingL":
-                switch("$W1_value") {
-                    case "on":
-                        if (status) {
-                            status.debug("W1 is on in state $atomicState.equip_state")
-                        }
-                        W1.off()
-                }
-                break
+    }
+    // start or stop humidifier and/or dehumidifier if necessary
+    update_humidity_equip()
+    // check whether heating outputs are in correct state
+    switch ("$equip_type") {
+        case "Furnace only":
+        case "Furnace and Air Conditioning":
+            W1_value = "TBD"
+            W2_value = "TBD"
+            switch ("$heat_type") {
+                case "Two stage":
+                    W2_value = W2.currentValue("switch")
+                case "Single stage":
+                    W1_value = W1.currentValue("switch")
+            }
+            switch ("$atomicState.equip_state") {
+                case "Heating":
+                case "HeatingL":
+                    switch("$W1_value") {
+                        case "off":
+                            status_device = getChildDevice("HVACZoning_${app.id}")
+                            status_device.debug("W1 is off in state $state.equip_state")
+                            log.debug("W1 is off in state $state.equip_state")
+                            W1.on()
+                            update_heat_run()
+                    }
+                    break
+                case "Idle":
+                case "IdleH":
+                case "IdleC":
+                case "PauseH":
+                case "PauseC":
+                case "Cooling":
+                case "CoolingL":
+                    switch("$W1_value") {
+                        case "on":
+                            status_device = getChildDevice("HVACZoning_${app.id}")
+                            status_device.debug("W1 is on in state $atomicState.equip_state")
+                            log.debug("W1 is on in state $atomicState.equip_state")
+                            W1.off()
+                    }
+                    switch("$W2_value") {
+                        case "on":
+                            status_device = getChildDevice("HVACZoning_${app.id}")
+                            status_device.debug("W2 is on in state $atomicState.equip_state")
+                            log.debug("W2 is on in state $atomicState.equip_state")
+                            W2.off()
+                    }
+                    break
+            }
+    }
+    // check whether cooling outputs are in correct state
+    switch ("$equip_type") {
+        case "Air Conditioning":
+        case "Furnace and Air Conditioning":
+            Y1_value = "TBD"
+            Y2_value = "TBD"
+            G_value = "TBD"
+            switch ("$cool_type") {
+                case "Two stage":
+                    Y2_value = Y2.currentValue("switch")
+                case "Single stage":
+                    Y1_value = Y1.currentValue("switch")
+                    G_value = G.currentValue("switch")
+            }
+            switch ("$atomicState.equip_state") {
+                case "Cooling":
+                case "CoolingL":
+                    switch("$Y1_value") {
+                        case "off":
+                            status_device = getChildDevice("HVACZoning_${app.id}")
+                            status_device.debug("Y1 is off in state $state.equip_state")
+                            log.debug("Y1 is off in state $state.equip_state")
+                            Y1.on()
+                            update_cool_run()
+                    }
+                    switch("$G_value") {
+                        case "off":
+                            status_device = getChildDevice("HVACZoning_${app.id}")
+                            status_device.debug("G is off in state $state.equip_state")
+                            log.debug("G is off in state $state.equip_state")
+                            G.on()
+                    }
+                    break
+                case "Idle":
+                case "IdleH":
+                case "IdleC":
+                case "PauseH":
+                case "PauseC":
+                case "Heating":
+                case "HeatingL":
+                    switch("$Y1_value") {
+                        case "on":
+                            status_device = getChildDevice("HVACZoning_${app.id}")
+                            status_device.debug("Y1 is on in state $atomicState.equip_state")
+                            log.debug("Y1 is on in state $atomicState.equip_state")
+                            Y1.off()
+                    }
+                    switch("$Y2_value") {
+                        case "on":
+                            status_device = getChildDevice("HVACZoning_${app.id}")
+                            status_device.debug("Y2 is on in state $atomicState.equip_state")
+                            log.debug("Y2 is on in state $atomicState.equip_state")
+                            Y2.off()
+                    }
+                    break
+            }
+    }
+    // check whether vent outputs are in correct state
+    V_value = "TBD"
+    G_value = "TBD"
+    switch ("$equip_type") {
+        case "Requires Blower":
+            G_value = G.currentValue("switch")
+        case "Doesn't Require Blower":
+            V_value = V.currentValue("switch")
+            switch ("$atomicState.vent_state") {
+                case "Forced":
+                case "Running":
+                case "End_Phase":
+                    switch("$V_value") {
+                        case "off":
+                            status_device = getChildDevice("HVACZoning_${app.id}")
+                            status_device.debug("V is off in state $atomicState.vent_state")
+                            log.debug("V is off in state $atomicState.vent_state")
+                            V.on()
+                    }
+                    switch("$G_value") {
+                        case "off":
+                            status_device = getChildDevice("HVACZoning_${app.id}")
+                            status_device.debug("G is off in state $atomicState.vent_state")
+                            log.debug("G is off in state $atomicState.vent_state")
+                            G.on()
+                    }
+                    break
+                 case "Off":
+                case "Waiting":
+                case "Complete":
+                    switch("$V_value") {
+                        case "on":
+                            status_device = getChildDevice("HVACZoning_${app.id}")
+                            status_device.debug("V is on in state $atomicState.vent_state")
+                            log.debug("V is on in state $atomicState.vent_state")
+                            V.off()
+                    }
+                    break
         }
     }
-    if (Y1) {
-        Y1_value = Y1.currentValue("switch")
-        switch ("$atomicState.equip_state") {
-            case "Cooling":
-            case "CoolingL":
-                switch("$Y1_value") {
-                    case "off":
-                        if (status) {
-                            status.debug("Y1 is off in state $atomicState.equip_state")
-                        }
-                        Y1.on()
-                        update_cool_run()
+    update_zones()
+}
+
+// Routines for handling humidiciation / dehumidification
+
+// The variable atomicState.humid_sw_state indicates the current state of humidification / dehumidification controls.  Possible values are:
+// "Off": which means neither humidification nor dehumidification is on (both are either off or don't exist)
+// "Humidify": which means humidification is on and dehumidification is off, atomicState.min_humidity_target is the humidity target
+// "Dehumidify": which means humidification is off and dehumidification is on, atomicState.max_humidity_target is the humidity target
+// "Auto": which means both humidification and dehumidification are on, target range is between atomicState.min_humidity_target and atomicState.max_humidity_target
+
+// The variable atomicState.humid_state indicates the current state of humidification / dehumidification equipment.  Possible values are:
+// "Off": which means neither humidification nor dehumidification is running
+// "Humidify": which means humidification is currently running
+// "Dehumidify": which means dehumidification is currently running
+
+def update_humidity_equip() {
+    // log.debug("In update_humidity_equip()")
+    // adjust humidification and dehumidification
+    Integer current_humidity
+    switch (atomicState.humid_sw_state) {
+        case "Humidify":
+        case "Dehumidify":
+        case "Auto":
+            def levelstate = indoor_humidity.currentState("humidity")
+            current_humidity = levelstate.value as Integer
+    }
+    atomicState.humid_state = "Off"
+    switch (atomicState.humid_sw_state) {
+        case "Humidify":
+        case "Auto":
+            Boolean state_ok
+            switch ("$humidifer_type") {
+                case "Separate from HVAC ductwork":
+                    state_ok = true
+                    break
+                case "Requires Heat":
+                    switch ("$atomicState.equip_state") {
+                        case "HeatingL":
+                        case "Heating":
+                            state_ok = true
+                            break;
+                        default:
+                            state_ok = false
+                    }
+                    break
+                case "Requires Fan":
+                    switch ("$atomicState.equip_state") {
+                        case "CoolingL":
+                        case "Cooling":
+                            state_ok = false
+                            break;
+                        default:
+                            state_ok = true
+                    }
+                    break
+            }
+            if (state_ok && (current_humidity < atomicState.min_humidity_target)) {
+                atomicState.humid_state = "Humidify"
+                update_fan_state()
+                Hum.on()
+            } else {
+                Hum.off()
+                update_fan_state()
+            }
+            break
+        default:
+            if (Hum) { Hum.off() }
+    }
+    switch (atomicState.humid_sw_state) {
+        case "Dehumidify":
+        case "Auto":
+            Boolean state_ok
+            switch ("$dehumidifer_type") {
+                case "Separate from HVAC ductwork":
+                    state_ok = true
+                    break
+                case "Outputs to Supply Plenum":
+                    switch ("$atomicState.equip_state") {
+                        case "Idle":
+                        case "IdleC":
+                        case "PauseC":
+                            state_ok = true
+                            break;
+                        default:
+                            state_ok = false
+                    }
+                    break
+                case "Outputs to Return Plenum":
+                    switch ("$atomicState.equip_state") {
+                        case "Idle":
+                        case "IdleC":
+                        case "PauseC":
+                        case "Cooling":
+                        case "CoolingL":
+                            state_ok = true
+                            break;
+                        default:
+                            state_ok = false
+                    }
+                    break
+            }
+            // log.debug("state_ok = $state_ok, current_humidity = $current_humidity, atomicState.max_humidity_target = $atomicState.max_humidity_target")
+            if (state_ok && (current_humidity > atomicState.max_humidity_target)) {
+                atomicState.humid_state = "Dehumidify"
+                Dehum.on()
+            } else {
+                Dehum.off()
+            }
+            // set dehumidify mode which is engaged by turning the switch off 
+            if (cool_dehum_mode) {
+                if (current_humidity > atomicState.max_humidity_target) {
+                    switch ("$atomicState.equip_state") {
+                        case "Cooling":
+                        case "CoolingL":
+                            cool_dehum.off()
+                            break
+                        default:
+                            cool_dehum.on()
+                    }
+                } else {
+                    cool_dehum.on()
                 }
-                break
-            case "Idle":
-            case "IdleH":
-            case "IdleC":
-            case "PauseH":
-            case "PauseC":
-            case "Heating":
-            case "HeatingL":n
-                switch("$Y1_value") {
-                    case "on":
-                        if (status) {
-                            status.debug("Y1 is on in state $atomicState.equip_state")
-                        }
-                        Y1.off()
-                }
-                break
+            } else if (cool_dehum) { cool_dehum.on() }
+            update_fan_state()
+            break
+        default:
+            if (Dehum) { Dehum.off() }
+            if (cool_dehum) { cool_dehum.on() }
+            atomicState.dehum_flow = 0
+    }
+}
+
+def update_humid_targets(evt=NULL) {
+    // log.debug("In update_humid_targets()")
+    humidifier_on = false
+    if (humidifier_target) {
+        def levelstate = humidifier_target.currentState("switch")
+        switch ("$levelstate.value") {
+            case "on":
+                levelstate = humidifier_target.currentState("level")
+                atomicState.min_humidity_target = levelstate.value as Integer
+                humidifier_on = true
         }
     }
-    if (G) {
-        G_value = G.currentValue("switch")
-        switch ("$atomicState.equip_state") {
-            case "Cooling":
-            case "CoolingL":
-                switch("$G_value") {
-                    case "off":
-                        if (status) {
-                            status.debug("G is off in state $atomicState.equip_state")
-                        }
-                        G.on()
-                }
-                break
+    dehumidifier_on = false
+    if (dehumidifier_target) {
+        def levelstate = dehumidifier_target.currentState("switch")
+        switch ("$levelstate.value") {
+            case "on":
+                levelstate = dehumidifier_target.currentState("level")
+                atomicState.max_humidity_target = levelstate.value as Integer
+                dehumidifier_on = true
+        }
+    }
+    if (humidifier_on) {
+        if (dehumidifier_on) {
+            atomicState.humid_sw_state = "Auto"
+            if (atomicState.max_humidity_target - atomicState.min_humidity_target < 10) {
+                Integer avg = (atomicState.min_humidity_target + atomicState.max_humidity_target) / 2 
+                atomicState.min_humidity_target = avg - 5
+                atomicState.max_humidity_target = avg + 5
+                humidifier_target.setLevel(atomicState.min_humidity_target)
+                dehumidifier_target.setLevel(atomicState.max_humidity_target)
+            }
+        } else {
+            atomicState.humid_sw_state = "Humidify"
+        }
+    } else {
+        if (dehumidifier_on) {
+            atomicState.humid_sw_state = "Dehumidify"
+        } else {
+            atomicState.humid_sw_state = "Off"
         }
     }
 }
@@ -794,13 +1478,18 @@ def check_for_lockup() {
 
 Boolean servable_heat_call() {
     // check for servable heat call
-    switch ("$heat_type") {
-        case "Single stage":
-        case "Two stage":
-            if (atomicState.heat_demand > 0) {
-                 if (atomicState.heat_accept+atomicState.off_capacity >= cfmW1) {
-                     return true;
-                 }
+    // log.debug("In servable_heat_call()")
+    switch ("$equip_type") {
+        case "Furnace only":
+        case "Furnace and Air Conditioning":
+            switch ("$heat_type") {
+                case "Single stage":
+                case "Two stage":
+                    if (atomicState.heat_demand > 0) {
+                         if (atomicState.heat_demand+atomicState.heat_accept+atomicState.off_capacity >= cfmW1) {
+                             return true;
+                         }
+                    }
             }
     }
     return false;
@@ -808,39 +1497,24 @@ Boolean servable_heat_call() {
 
 def start_heat_run() {
     // log.debug("In start_heat_run()")
-    // turn on zones with heat call and, if necessary, dump zones
     set_equip_state("HeatingL")
-    def zones = getChildApps()
-    if (atomicState.heat_demand + atomicState.off_capacity >= cfmW1) {
-        zones.each { z ->
-            if (z.get_heat_demand() > 0) {
-                z.turn_on("heating")
-            } else {
-                z.turn_off()
-            }
-        }
-    } else {
-        zones.each { z ->
-            if (z.get_heat_accept() > 0) {
-                z.turn_on("heating")
-            } else {
-                z.turn_off()
-            }
-        }
-    }
     atomicState.last_heating_start = now()
     W1.on()
-    runIn(1, equipment_on_adjust_vent, [misfire: "ignore"]) // this updates the ventilation state if necessary
+    update_fan_state()
     runIn(heat_min_runtime*60, equipment_state_timeout, [misfire: "ignore"]) // this will cause a transition to Heating state at the right time 
     switch ("$heat_type") {
         case "Two stage":
-            runIn(heat_stage2_delay*60, stage2_heat, [misfire: "ignore"]) 
+            if (heat_stage2_delay) { runIn(heat_stage2_delay*60, stage2_heat, [misfire: "ignore"]) }
             stage2_heat()
     }
+    update_humidity_equip()
+    equipment_on_adjust_vent()
+    update_fan_state()
 }
 
-def stage2_heat() {
+def stage2_heat(evt=NULL) {
     // log.debug("In stage2_heat()")
+    old_second_stage = atomicState.second_stage
     switch ("$atomicState.equip_state") {
         case "Heating":
         case "HeatingL":
@@ -848,20 +1522,61 @@ def stage2_heat() {
                 case "Two stage":
                     if (atomicState.heat_demand + atomicState.off_capacity < cfmW2) {
                         stage2_heat_off()
-                    } else if (now() - atomicState.last_heating_start > heat_stage2_delay * 60 * 1000) {
-                        stage2_heat_on()
                     } else {
-                        stage2 = false;
-                        def zones = getChildApps()
-                        zones.each { z ->
-                            if ((z.get_heat_demand() > 0) && (z.full_thermostat())) {
-                                if (z.get_heat_setpoint() - z.get_temp() >= heat_stage2_deltat) {
-                                    stage2 = true
+                        if (heat_stage2_criteria) {
+                            num_satisfied = 0
+                            heat_stage2_criteria.each { crit ->
+                                switch ("$crit") {
+                                    case "Runtime in low stage":
+                                        if (now() - atomicState.last_heating_start > heat_stage2_delay * 60 * 1000) { num_satisfied++ }
+                                        break
+                                    case "Setpoint/Temp difference":
+                                        def zones = getChildApps()
+                                        BigDecimal max_delta = 0
+                                        zones.each { z ->
+                                            if (atomicState.main_zones.findAll { it == z.label }) {
+                                                BigDecimal delta = z.heat_delta_temp()
+                                                if (delta > max_delta) { max_delta = delta }
+                                            }
+                                        }
+                                        if (max_delta >= heat_stage2_delta) { num_satisfied++ }
+                                        break
+                                    case "Total heat demand threshold":
+                                        if (atomicState.heat_demand >= heat_stage2_threshold) { num_satisfied++ }
+                                        break
+                                    case "When a switch in on":
+                                        if (heat_stage2_switch) {
+                                            switch_value = heat_stage2_switch.currentValue("switch")
+                                            if (switch_value == "on") { num_satisfied++ }
+                                        }
+                                        break
+                                    case "Outdoor temp":
+                                        if (outdoor_temp) {
+                                            temp_value = outdoor_temp.currentValue("temperature")
+                                            if (temp_value < heat_stage2_outdoor_threshold) { num_satisfied++ }
+                                        }
+                                        break
+                                    default:
+                                        log.debug("Unknown heat_stage2_criteria $crit")
                                 }
                             }
-                        }
-                        if (stage2) {
-                            stage2_heat_on()
+                            if (heat_stage2_criteria.size() == 0) {
+                                stage2_heat_off()
+                            } else {
+                                if (heat_stage2_and) {
+                                    if (num_satisfied == heat_stage2_criteria.size()) {
+                                        stage2_heat_on()
+                                    } else {
+                                        stage2_heat_off()
+                                    }
+                                } else {
+                                    if (num_satisfied > 0) {
+                                        stage2_heat_on()
+                                    } else {
+                                        stage2_heat_off()
+                                    }
+                                }
+                            }
                         } else {
                             stage2_heat_off()
                         }
@@ -869,51 +1584,41 @@ def stage2_heat() {
             }
             break
     }
+    if (old_second_stage != atomicState.second_stage) {
+        update_zones()
+    }
 }
 
 def stage2_heat_on() {
-    if (W2) {
-        W2.on()
-        if (status) {
-            status.second_stage_on()
-        }
+    switch ("$atomicState.equip_state") {
+        case "Heating":
+        case "HeatingL":
+            switch ("$heat_type") {
+                case "Two stage":
+                    W2.on()
+                    if (!atomicState.second_stage) { atomicState.second_stage = true }
+            }
     }
 }
 
 def stage2_heat_off() {
-    if (W2) {
-        W2.off()
-        if (status) {
-            status.second_stage_off()
-        }
+    switch ("$equip_type") {
+        case "Furnace only":
+        case "Furnace and Air Conditioning":
+            switch ("$heat_type") {
+                case "Two stage":
+                    W2.off()
+            }
     }
+    if (atomicState.second_stage) { atomicState.second_stage = false }
 }
 
 def update_heat_run() {
     // log.debug("In update_heat_run()")
-    def zones = getChildApps()
-    if (atomicState.heat_demand + atomicState.off_capacity >= cfmW1) {
-        zones.each { z ->
-            if (z.get_heat_demand() > 0) {
-                z.turn_on("heating")
-            } else {
-                z.turn_off()
-            }    
-        }
-    } else if (atomicState.heat_accept + atomicState.off_capacity >= cfmW1) {
-        zones.each { z ->
-            if (z.get_heat_accept() > 0) {
-                z.turn_on("heating")
-            } else {
-                z.turn_off()
-            }
-        }
-    } else {
-        zones.each { z ->
-            z.turn_on("heating")
-        }
+    switch ("$heat_type") {
+        case "Two stage":
+            stage2_heat()
     }
-    stage2_heat()
 }
 
 def end_heat_run() {
@@ -923,70 +1628,57 @@ def end_heat_run() {
     switch ("$heat_type") {
         case "Two stage":
             stage2_heat_off()
+            unschedule(stage2_heat)
         case "Single stage":
             W1.off()
     }
-    runIn(1, equipment_off_adjust_vent, [misfire: "ignore"]) // this updates the ventilation state if necessary
     runIn(heat_min_idletime*60, equipment_state_timeout, [misfire: "ignore"]) // this will cause a transition to IdleH state at the right time 
-    switch ("$heat_type") {
-        case "Two stage":
-            stage2_heat()
-    }
+    update_humidity_equip()
+    equipment_off_adjust_vent()
+    update_fan_state()
 }
 
 // Routines for handling cooling
 
 Boolean servable_cool_call() {
     // check for servable cooling call
-    switch ("$cool_type") {
-        case "Single stage":
-        case "Two stage":
-            if (atomicState.cool_demand > 0) {
-                 if (atomicState.cool_accept+atomicState.off_capacity >= cfmY1) {
-                     return true;
-                 }
+    // log.debug("In servable_cool_call()")
+    switch ("$equip_type") {
+        case "Air Conditioning only":
+        case "Furnace and Air Conditioning":
+            switch ("$cool_type") {
+                case "Single stage":
+                case "Two stage":
+                    if (atomicState.cool_demand > 0) {
+                         if (atomicState.cool_demand+atomicState.cool_accept+atomicState.off_capacity >= cfmY1) {
+                             return true;
+                         }
+                    }
             }
     }
     return false;
 }
 
 def start_cool_run() {
-    log.debug("In start_cool_run()")
-    // turn on zones with cooling call and turn off others
+    // log.debug("In start_cool_run()")
     set_equip_state("CoolingL")
-    def zones = getChildApps()
-    if (atomicState.cool_demand + atomicState.off_capacity >= cfmY1) {
-        zones.each { z ->
-            if (z.get_cool_demand() > 0) {
-                z.turn_on("cooling")
-            } else {
-                z.turn_off()
-            }
-        }
-    } else {
-        zones.each { z ->
-            if (z.get_cool_accept() > 0) {
-                z.turn_on("cooling")
-            } else {
-                z.turn_off()
-            }
-        }
-    }
     atomicState.last_cooling_start = now()
     Y1.on()
-    switch_fan_on()
-    set_fan_state("On_for_cooling")
-    runIn(5, equipment_on_adjust_vent, [misfire: "ignore"]) // this updates the ventilation state if necessary
+    update_fan_state()
     runIn(cool_min_runtime*60, equipment_state_timeout, [misfire: "ignore"]) // this will cause a transition to Cooling state at the right time 
     switch ("$cool_type") {
         case "Two stage":
-            runIn(cool_stage2_delay*60, stage2_cool, [misfire: "ignore"]) 
+            if (cool_stage2_delay) { runIn(cool_stage2_delay*60, stage2_cool, [misfire: "ignore"])  }
             stage2_cool()
     }
+    update_humidity_equip()
+    equipment_on_adjust_vent()
+    update_fan_state()
 }
 
-def stage2_cool() {
-    log.debug("In stage2_cool()")
+def stage2_cool(evt=NULL) {
+    // log.debug("In stage2_cool()")
+    old_second_stage = atomicState.second_stage
     switch ("$atomicState.equip_state") {
         case "Cooling":
         case "CoolingL":
@@ -994,71 +1686,99 @@ def stage2_cool() {
                 case "Two stage":
                     if (atomicState.cool_demand + atomicState.off_capacity < cfmY2) {
                         stage2_cool_off()
-                    } else if (now() - atomicState.last_cooling_start > cool_stage2_delay * 60 * 1000) {
-                        stage2_cool_on()
                     } else {
-                        stage2 = false;
-                        def zones = getChildApps()
-                        zones.each { z ->
-                            if ((z.get_cool_demand() > 0) && (z.full_thermostat())) {
-                                if (z.get_temp() - z.get_cool_setpoint() >= cool_stage2_deltat) {
-                                    stage2 = true;
+                        if (cool_stage2_criteria) {
+                            num_satisfied = 0
+                            cool_stage2_criteria.each { crit ->
+                                switch ("$crit") {
+                                    case "Runtime in low stage":
+                                        if (now() - atomicState.last_cooling_start > cool_stage2_delay * 60 * 1000) { num_satisfied++ }
+                                        break
+                                    case "Setpoint/Temp difference":
+                                        def zones = getChildApps()
+                                        BigDecimal max_delta = 0
+                                        zones.each { z ->
+                                            if (atomicState.main_zones.findAll { it == z.label }) {
+                                                BigDecimal delta = z.cool_delta_temp()
+                                                if (delta > max_delta) { max_delta = delta }
+                                            }
+                                        }
+                                        if (max_delta >= cool_stage2_delta) { num_satisfied++ }
+                                        break
+                                    case "Total cool demand threshold":
+                                        if (atomicState.cool_demand >= cool_stage2_threshold) { num_satisfied++ }
+                                        break
+                                    case "When a switch in on":
+                                        if (cool_stage2_switch) {
+                                            switch_value = cool_stage2_switch.currentValue("switch")
+                                            if (switch_value == "on") { num_satisfied++ }
+                                        }
+                                        break
+                                    case "Outdoor temp":
+                                        if (outdoor_temp) {
+                                            temp_value = outdoor_temp.currentValue("temperature")
+                                            if (temp_value > cool_stage2_outdoor_threshold) { num_satisfied++ }
+                                        }
+                                        break
+                                    default:
+                                        log.debug("Unknown cool_stage2_criteria $crit")
                                 }
                             }
-                        }
-                        if (stage2) {
-                            stage2_cool_on()
+                            if (cool_stage2_criteria.size() == 0) {
+                                stage2_cool_off()
+                            } else {
+                                if (cool_stage2_and) {
+                                    if (num_satisfied == cool_stage2_criteria.size()) {
+                                        stage2_cool_on()
+                                    } else {
+                                        stage2_cool_off()
+                                    }
+                                } else {
+                                    if (num_satisfied > 0) {
+                                        stage2_cool_on()
+                                    } else {
+                                        stage2_cool_off()
+                                    }
+                                }
+                            }
                         } else {
                             stage2_cool_off()
                         }
-                    }
+                   }
             }
             break
+    }
+    if (old_second_stage != atomicState.second_stage) {
+        update_zones()
     }
 }
 
 def stage2_cool_on() {
-    if (Y2) {
-        Y2.on()
-        if (status) {
-            status.second_stage_on()
-        }
+    switch ("$atomicState.equip_state") {
+        case "Cooling":
+        case "CoolingL":
+            switch ("$cool_type") {
+                case "Two stage":
+                    Y2.on()
+                    if (!atomicState.second_stage) { atomicState.second_stage = true }
+            }
     }
 }
 
 def stage2_cool_off() {
-    if (Y2) {
-        Y2.off()
-        if (status) {
-            status.second_stage_off()
-        }
+    switch ("$equip_type") {
+        case "Air Conditioning only":
+        case "Furnace and Air Conditioning":
+            switch ("$cool_type") {
+                case "Two stage":
+                    Y2.off()
+            }
     }
+    if (atomicState.second_stage) { atomicState.second_stage = false }
 }
 
 def update_cool_run() {
-    log.debug("In update_cool_run()")
-    def zones = getChildApps()
-    if (atomicState.cool_demand + atomicState.off_capacity >= cfmY1) {
-        zones.each { z ->
-            if (z.get_cool_demand() > 0) {
-                z.turn_on("cooling")
-            } else {
-                z.turn_off()
-            }
-        }
-    } else if (atomicState.cool_accept + atomicState.off_capacity >= cfmY1) {
-        zones.each { z ->
-            if (z.get_cool_accept() > 0) {
-                z.turn_on("cooling")
-            } else {
-                z.turn_off()
-            }
-        }
-    } else {
-        zones.each { z ->
-                z.turn_on("cooling")
-        }
-    }
+    // log.debug("In update_cool_run()")
     switch ("$cool_type") {
         case "Two stage":
             stage2_cool()
@@ -1066,23 +1786,26 @@ def update_cool_run() {
 }
 
 def end_cool_run() {
-    log.debug("In end_cool_run()")
+    // log.debug("In end_cool_run()")
     set_equip_state("PauseC")
     atomicState.last_cooling_stop = now()
     switch ("$cool_type") {
         case "Two stage":
             stage2_cool_off()
+            unschedule(stage2_cool)
         case "Single stage":
             Y1.off()
     }
-    runIn(5, equipment_off_adjust_vent, [misfire: "ignore"]) // this updates the ventilation state if necessary (extra time because thermostat sometimes stays in fan_only for a few seconds between cooling and idle)
     runIn(cool_min_idletime*60, equipment_state_timeout, [misfire: "ignore"]) // this will cause a transition to IdleC state at the right time 
+    update_humidity_equip()
+    equipment_off_adjust_vent()
+    update_fan_state()
 }
 
 // Routines for handling fan only commands
 
 def update_fan_state() {
-    log.debug("In update_fan_state()")
+    // log.debug("In update_fan_state()")
     switch ("$atomicState.equip_state") {
         case "Idle":
         case "IdleH":
@@ -1095,108 +1818,239 @@ def update_fan_state() {
                     case "End_Phase":
                     case "Running":
                     set_fan_state("On_for_vent")
+                    G.on()
                     return
                 }
             }
+            if (("$atomicState.humid_state" == "Dehumidify") && ("$dehumidifer_type" == "Outputs to Return Plenum")) {
+                set_fan_state("On_for_dehum")
+                G.on()
+                return
+            }
+            if (("$atomicState.humid_state" == "Humidify") && ("$humidifer_type" == "Requires Fan")) {
+                set_fan_state("On_for_humid")
+                G.on()
+                return
+            }
             if (atomicState.fan_demand > 0) {
-                 if (atomicState.fan_demand+atomicState.off_capacity >= cfmG) {
-                     set_fan_state("On_by_request")
-                     return
-                 }
+                if (atomicState.fan_demand+atomicState.off_capacity >= cfmG) {
+                    set_fan_state("On_by_request")
+                    G.on()
+                    return
+                }
             }
             set_fan_state("Off")
+            G.off()
             return
         case "Heating":
         case "HeatingL":
-            // leave fan_state wherever it was when heating equipment is running
-            return
         case "Cooling":
         case "CoolingL":
-            set_fan_state("On_for_cooling")
+            set_fan_state("On_for_equip")
+            G.on()
             return
     }
 }
 
-def update_fan_zones() {
-    log.debug("In update_fan_zones()")
-    // select the correct zones and turn the fan on or off if needed
+def update_zones() {
+    // log.debug("In update_zones()")
+    def flow = 0
+    def accept_flow = 0
+    def force_flow = 0
+    def current_state = "TBD"
+    status_device = getChildDevice("HVACZoning_${app.id}")
     switch ("$atomicState.equip_state") {
+        case "Idle":
+        case "IdleH":
+        case "IdleC":
+        case "PauseH":
+        case "PauseC":
+            switch ("$atomicState.fan_state") {
+                case "Off":
+                    if (("$atomicState.humid_state" == "Dehumidify") && ("$dehumidifer_type" == "Outputs to Supply Plenum")) {
+                        current_state = "Dehum"
+                        flow = cfmDeHum 
+                        if (flow > atomicState.dehum_accept) {
+                            force_flow = flow - atomicState.dehum_accept
+                        }
+                    } else {
+                        current_state = "Idle"
+                    }
+                    break
+                case "On_for_equip":
+                    log.debug("On_for_equip is incompatible with equipment state $atomicState.equip_state")
+                    status_device.debug("On_for_equip is incompatible with equipment state $atomicState.equip_state")
+                    break
+                case "On_for_vent":
+                    current_state = "Vent"
+                    flow = cfmG - atomicState.off_capacity
+                    if (("$atomicState.humid_state" == "Dehumidify") && ("$dehumidifer_type" == "Outputs to Supply Plenum")) {
+                        flow += cfmDeHum 
+                    }
+                    if (flow > atomicState.fan_accept) {
+                        force_flow = flow - atomicState.fan_accept
+                    }
+                    break
+                case "On_for_dehum":
+                    current_state = "Dehum"
+                    flow = cfmG - atomicState.off_capacity
+                    if (flow > atomicState.dehum_accept) {
+                       force_flow = flow - atomicState.dehum_accept
+                    }
+                    break
+                case "On_for_humid":
+                    current_state = "Humid"
+                    flow = cfmG - atomicState.off_capacity
+                    if (flow > atomicState.humid_accept) {
+                       force_flow = flow - atomicState.humid_accept
+                    }
+                    break
+                case "On_by_request":
+                    current_state = "Fan"
+                    flow = cfmG - atomicState.off_capacity
+                    if (("$atomicState.humid_state" == "Dehumidify") && ("$dehumidifer_type" == "Outputs to Supply Plenum")) {
+                        flow += cfmDeHum 
+                    }
+                    if (flow > atomicState.fan_demand) {
+                        force_flow = flow - atomicState.fan_demand
+                    }
+                    break
+            }
+            break
         case "Heating":
         case "HeatingL":
-            // don't update zones or fan command during heating call 
-            return
+            current_state = "Heating"
+            if (atomicState.second_stage) {
+                flow = cfmW2 - atomicState.off_capacity
+            } else {
+                flow = cfmW1 - atomicState.off_capacity
+            }
+            if (flow > atomicState.heat_demand) {
+                accept_flow = flow - atomicState.heat_demand
+                if (accept_flow > atomicState.heat_accept) {
+                    force_flow = accept_flow - atomicState.heat_accept
+                }
+            }
+            break
+        case "Cooling":
+        case "CoolingL":
+            current_state = "Cooling"
+            if (atomicState.second_stage) {
+                flow = cfmY2 - atomicState.off_capacity
+            } else {
+                flow = cfmY1 - atomicState.off_capacity
+            }
+            if (flow > atomicState.cool_demand) {
+                accept_flow = flow - atomicState.cool_demand
+                if (accept_flow > atomicState.cool_accept) {
+                    force_flow = accept_flow - atomicState.cool_accept
+                }
+            }
+            break
     }
+    // log.debug("state = $current_state, flow = $flow, accept_flow = $accept_flow, force_flow = $force_flow")
+    status_device.setState(current_state, flow)
     def zones = getChildApps()
-    switch ("$atomicState.fan_state") {
-        case "On_for_cooling":
-            switch_fan_on()
-            break
-        case "On_for_vent": 
-            if (atomicState.vent_demand >= cfmG) {
-                zones.each { z ->
-                    if (z.get_vent_demand() > 0) {
-                        z.turn_on("fan only")
+    zones.each { z ->
+        if (atomicState.main_zones.findAll { it == z.label }) {
+            zone_status_device = z.get_status_device()
+            // log.debug("updating zone $z.label")
+            switch ("$current_state") {
+                case "Heating":
+                    demand = zone_status_device.currentValue("heat_demand")
+                    if (demand) {
+                        zone_status_device.setState("Heating", demand + force_flow)
                     } else {
-                        z.turn_off()
+                        accept = zone_status_device.currentValue("heat_accept")
+                        if (force_flow) {
+                            zone_status_device.setState("Heating", accept + force_flow)
+                        } else if (atomicState.heat_accept) {
+                            Integer sub_flow = accept * accept_flow / atomicState.heat_accept
+                            if (sub_flow) {
+                                zone_status_device.setState("Heating", sub_flow)
+                            } else {
+                                zone_status_device.setState("Off", 0)
+                            }
+                        } else {
+                            zone_status_device.setState("Off", 0)
+                        }
                     }
-                }
-            } else {
-                zones.each { z ->
-                    z.turn_on("fan only")
-                }
-            }
-            switch_fan_on()
-            break
-        case "On_by_request":
-            if (atomicState.vent_demand >= cfmG) {
-                zones.each { z ->
-                    if (z.get_fan_demand() > 0) {
-                        z.turn_on("fan only")
+                    break
+                case "Cooling":
+                    demand = zone_status_device.currentValue("cool_demand")
+                    if (demand) {
+                        zone_status_device.setState("Cooling", demand + force_flow)
                     } else {
-                        z.turn_off()
+                        accept = zone_status_device.currentValue("cool_accept")
+                        if (force_flow) {
+                            zone_status_device.setState("Cooling", accept + force_flow)
+                        } else if (atomicState.cool_accept) {
+                            Integer sub_flow = accept * accept_flow / atomicState.cool_accept
+                            if (sub_flow) {
+                                zone_status_device.setState("Cooling", sub_flow)
+                            } else {
+                                zone_status_device.setState("Off", 0)
+                            }
+                        } else {
+                            zone_status_device.setState("Off", 0)
+                        }
                     }
-                }
-                switch_fan_on()
-            } else {
-                zones.each { z ->
-                    z.turn_on("fan only")
-                }
+                    break
+                case "Fan":
+                    demand = zone_status_device.currentValue("fan_demand")
+                    if (demand) {
+                        zone_status_device.setState("Fan", demand + force_flow)
+                    } else {
+                        if (force_flow) {
+                            zone_status_device.setState("Fan", force_flow)
+                        } else {
+                            zone_status_device.setState("Off", 0)
+                        }
+                    }
+                    break
+                case "Vent":
+                    demand = zone_status_device.currentValue("fan_accept")
+                    if (demand) {
+                        zone_status_device.setState("Vent", demand + force_flow)
+                    } else {
+                        if (force_flow) {
+                            zone_status_device.setState("Vent", force_flow)
+                        } else {
+                            zone_status_device.setState("Off", 0)
+                        }
+                    }
+                    break
+                case "Dehum":
+                    demand = zone_status_device.currentValue("dehum_accept")
+                    // log.debug("zone dehum demand is $demand")
+                    if (demand) {
+                        zone_status_device.setState("Dehum", demand + force_flow)
+                    } else {
+                        if (force_flow) {
+                            zone_status_device.setState("Dehum", force_flow)
+                        } else {
+                            zone_status_device.setState("Off", 0)
+                        }
+                    }
+                    break
+                case "Humid":
+                    demand = zone_status_device.currentValue("humid_accept")
+                    // log.debug("zone humid demand is $demand")
+                    if (demand) {
+                        zone_status_device.setState("Humid", demand + force_flow)
+                    } else {
+                        if (force_flow) {
+                            zone_status_device.setState("Humid", force_flow)
+                        } else {
+                            zone_status_device.setState("Off", 0)
+                        }
+                    }
+                    break
+                case "Idle":
+                    zone_status_device.setState("Idle", 0)
+                    break
             }
-            break
-        case "Off":
-            zones.each { z ->
-                z.turn_idle()
-            }
-            switch_fan_off()
-            break
-    }
-}
-
-// switch_fan_on() and switch_fan_off change either the fan switch or the wired thermostat
-
-def switch_fan_on() {
-    // log.debug("In switch_fan_on()")
-    if (wired_tstat) {
-        if (fan_by_wired_tstat) {
-            wired_tstat.fanOn()
-        } else {
-            G.on()
         }
-    } else {
-        G.on()
-    }
-}
-
-def switch_fan_off() {
-    // log.debug("In switch_fan_off()")
-    if (wired_tstat) {
-        if (fan_by_wired_tstat) {
-            wired_tstat.fanAuto()
-        } else {
-            G.off()
-        }
-    } else {
-        G.off()
     }
 }
 
@@ -1207,7 +2061,7 @@ def switch_fan_off() {
 // updated during changes (not continuously).
 
 def start_vent_interval() {
-    log.debug("In start_vent_interval()")
+    // log.debug("In start_vent_interval()")
     unschedule(vent_runtime_reached)
     unschedule(vent_deadline_reached)
     atomicState.vent_interval_start = now()
@@ -1218,14 +2072,11 @@ def start_vent_interval() {
     Integer percent = levelstate.value as Integer
     Integer runtime = 60 * 60 * percent / 100
     atomicState.vent_runtime = runtime
-    // log.debug("runtime is $atomicState.vent_runtime")
     if ("$atomicState.vent_state" == "Forced") {
-        // log.debug("Still in forced vent state")
         return;
     }
     switch ("$vent_type") {
         case "Doesn't Require Blower":
-            // log.debug("vent on - Running")
             set_vent_state("Running")
             V.on()
             runIn(atomicState.vent_runtime, vent_runtime_reached, [misfire: "ignore"])
@@ -1237,11 +2088,10 @@ def start_vent_interval() {
                 case "PauseH":
                 case "IdleC":
                 case "PauseC":
-                    // log.debug("vent off - Waiting")
                     set_vent_state("Waiting")
                     V.off()
                     update_fan_state()
-                    update_fan_zones()
+                    update_zones()
                     runIn(60 * 60 - atomicState.vent_runtime, vent_deadline_reached, [misfire: "ignore"])
                     break
                 case "Heating":
@@ -1249,7 +2099,6 @@ def start_vent_interval() {
                 case "Cooling":
                 case "CoolingL":
                     atomicState.vent_started = now()
-                    // log.debug("vent on - Running")
                     set_vent_state("Running")
                     V.on()
                     runIn(atomicState.vent_runtime, vent_runtime_reached, [misfire: "ignore"])
@@ -1287,7 +2136,7 @@ def vent_force_activated(evt=NULL) {
     switch ("$vent_type") {
         case "Requires Blower":
             update_fan_state()
-            update_fan_zones()
+            update_zones()
             break
     }
 }
@@ -1299,7 +2148,6 @@ def vent_force_deactivated(evt=NULL) {
         if (atomicState.vent_started > atomicState.vent_interval_start) {
             // still in same interval as when force ventilation started
             Integer runtime = atomicState.vent_runtime
-            // log.debug("runtime is $runtime")
             runtime -= (now() - atomicState.vent_started) / 1000
             atomicState.vent_runtime = runtime
         } else {
@@ -1311,19 +2159,17 @@ def vent_force_deactivated(evt=NULL) {
             atomicState.vent_runtime = runtime
         }
         if (atomicState.vent_runtime <= 0) {
-            // log.debug("vent off - Complete")
             set_vent_state("Complete")
             V.off()
             switch ("$vent_type") {
                 case "Requires Blower":
                     update_fan_state()
-                    update_fan_zones()
+                    update_zones()
             }
         } else {
             switch ("$vent_type") {
                 case "Doesn't Require Blower":
                     V.on()
-                    // log.debug("vent on - Running")
                     set_vent_state("Running")
                     runIn(atomicState.vent_runtime, vent_runtime_reached, [misfire: "ignore"])
                     break;
@@ -1338,7 +2184,7 @@ def vent_force_deactivated(evt=NULL) {
                             set_vent_state("Waiting")
                             V.off()
                             update_fan_state()
-                            update_fan_zones()
+                            update_zones()
                             Integer deadline = (atomicState.vent_interval_end - now()) / 1000 - atomicState.vent_runtime
                             runIn(deadline, vent_deadline_reached, [misfire: "ignore"])
                             break
@@ -1356,13 +2202,12 @@ def vent_force_deactivated(evt=NULL) {
             }
         }
     } else {
-        // log.debug("vent off - Off")
         set_vent_state("Off")
         V.off()
         switch ("$vent_type") {
             case "Requires Blower":
                 update_fan_state()
-                update_fan_zones()
+                update_zones()
         }
     }
 }
@@ -1376,7 +2221,6 @@ def vent_control_activated(evt=NULL) {
     Long hours = minutes / 60
     seconds = seconds - (minutes * 60)
     minutes = minutes - (hours * 60)
-    // log.debug("$minutes minutes, $seconds seconds")
     schedule_str = "$seconds $minutes * ? * *"
     schedule(schedule_str, start_vent_interval)
     // In 5 seconds, start_vent_interval() will do the work of putting everything into the correct state
@@ -1395,30 +2239,30 @@ def vent_control_deactivated(evt=NULL) {
         switch ("$vent_type") {
             case "Requires Blower":
                 update_fan_state()
-                update_fan_zones()
+                update_zones()
         }
     }
 }
 
 def vent_runtime_reached() {
-    log.debug("In vent_runtime_reached()")
+    // log.debug("In vent_runtime_reached()")
     set_vent_state("Complete")
     V.off()
     switch ("$vent_type") {
         case "Requires Blower":
             update_fan_state()
-            update_fan_zones()
+            update_zones()
     }
 }
 
 def vent_deadline_reached() {
-    log.debug("In vent_deadline_reached()")
+    // log.debug("In vent_deadline_reached()")
     set_vent_state("End_Phase")
     V.on()
     switch ("$vent_type") {
         case "Requires Blower":
             update_fan_state()
-            update_fan_zones()
+            update_zones()
     }
 }
 
@@ -1426,13 +2270,15 @@ def equipment_off_adjust_vent() {
     // this is called any time that the heating and cooling equipment transitions from on to off
     // it may also be called while equipment is off, such as extraneous call from mode_change_delay
     // it should not be called with equipment on, although the blower may be on serving a fan only call
-    log.debug("In equipment_off_adjust_vent()")
+    // log.debug("In equipment_off_adjust_vent()")
     switch ("$atomicState.equip_state") {
         case "Heating":
         case "HeatingL":
         case "Cooling":
         case "CoolingL":
-            debug("*** equipment_off_adjust_vent() should not be called with equipment running")
+            status_device = getChildDevice("HVACZoning_${app.id}")
+            status_device.debug("equipment_off_adjust_vent() should not be called with equipment running")
+            log.debug("equipment_off_adjust_vent() should not be called with equipment running")
             return
     }
     switch ("$vent_type") {
@@ -1448,25 +2294,21 @@ def equipment_off_adjust_vent() {
                 case "Forced":
                     break;
                 case "Running":
-                    // log.debug("vent off - Waiting")
                     set_vent_state("Waiting")
                     unschedule(vent_runtime_reached)
                     V.off()
                     Integer runtime = atomicState.vent_runtime - (now() - atomicState.vent_started) / 1000
                     atomicState.vent_runtime = runtime
-                    // log.debug("runtime is $atomicState.vent_runtime")
                     Integer deadline = (atomicState.vent_interval_end - now()) / 1000 - runtime
                     runIn(deadline, vent_deadline_reached, [misfire: "ignore"])
                     break;
             }
     }
-    update_fan_state()
-    update_fan_zones()
 }
 
 def equipment_on_adjust_vent() {
     // this is called any time that the heating and cooling equipment transitions from off to on
-    log.debug("In equipment_on_adjust_vent()")
+    // log.debug("In equipment_on_adjust_vent()")
     switch ("$vent_type") {
         case "Doesn't Require Blower":
         case "None":
@@ -1480,7 +2322,6 @@ def equipment_on_adjust_vent() {
                 case "Forced":
                     break;
                 case "Waiting":
-                    // log.debug("vent on - Running")
                     set_vent_state("Running")
                     atomicState.vent_started = now()
                     unschedule(vent_deadline_reached)
@@ -1562,6 +2403,7 @@ def get_equipment_status() {
             switch ("$atomicState.fan_state") {
                 case "On_for_cooling":
                 case "On_for_vent": 
+                case "On_for_dehum": 
                 case "On_by_request":
                     return "fan only"
                 case "Off":
@@ -1574,4 +2416,18 @@ def get_equipment_status() {
         case "CoolingL":
             return "cooling"
     }
+}
+
+Boolean subzone_ok(String parent_zone, String child_zone) {
+    // log.debug("checking whether $child_zone can be a subzone of $parent_zone")
+    if (child_zone == parent_zone) { return false }
+    if (child_zone == app.label) { return false }
+    Boolean result = true
+    def zones = getChildApps()
+    zones.each { z ->
+        if (z.label != parent_zone) {
+            if (z.has_subzone(child_zone)) { result = false }
+        }
+    }
+    return result
 }
