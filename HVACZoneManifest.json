@@ -15,21 +15,11 @@
       "primary": false
     },
     {
-    {
       "id": "6d562bd4-2969-4ae7-93f7-9bde3a9b19c7",
-      "name": "HVAC SubZone",
+      "name": "HVAC Zone",
       "namespace": "rbaldwi3",
-      "location": "https://raw.githubusercontent.com/rbaldwi3/HVAC/master/HVAC_SubZone.groovy",
+      "location": "https://raw.githubusercontent.com/rbaldwi3/HVAC/master/HVAC_Zone.groovy",
       "required": true,
-      "oauth": false,
-      "primary": false
-    },
-    {
-      "id": "8635524c-f856-43b1-9707-7ec59dab38af",
-      "name": "Indirect Thermostat Filler",
-      "namespace": "rbaldwi3",
-      "location": "https://raw.githubusercontent.com/rbaldwi3/HVAC/master/Indirect_Thermostat_Filler.groovy",
-      "required": false,
       "oauth": false,
       "primary": false
     }
