@@ -1,7 +1,7 @@
 /**
  *  HVAC Zoning
  *
- *  Copyright 2020 Reid Baldwin
+ *  Copyright 2021 Reid Baldwin
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
@@ -57,7 +57,7 @@ preferences {
             input(name: "vent_type", type: "enum", required: true, title: "Ventilation Equipment Type",
                   options: ["None", "Requires Blower", "Doesn't Require Blower"])
             input(name: "humidifer_type", type: "enum", required: true, title: "Humidifier Type",
-                  options: ["None", "Separate from HVAC ductwork", "Requires Heat"])
+                  options: ["None", "Separate from HVAC ductwork", "Requires Heat", "Requires Fan"])
             input(name: "dehumidifer_type", type: "enum", required: true, title: "Dehumidifier Type",
                   options: ["None", "Separate from HVAC ductwork", "Outputs to Supply Plenum", "Outputs to Return Plenum"])
         }
@@ -142,6 +142,7 @@ def pageTwo() {
             switch ("$humidifer_type") {
                 case "Separate from HVAC ductwork":
                 case "Requires Heat":
+                case "Requires Fan":
                     input "Hum", "capability.switch", required:true, title: "Command Humidifier"
                     humidity_required = true
             }
@@ -262,6 +263,7 @@ def pageThree() {
             switch ("$humidifer_type") {
                 case "Separate from HVAC ductwork":
                 case "Requires Heat":
+                case "Requires Fan":
                     input "humidifier_target", "capability.switchLevel", required:true, title: "Minimum Relative Humidity Target (generally Heating Season)"
             }
             switch ("$dehumidifer_type") {
@@ -309,7 +311,7 @@ def installed() {
 }
 
 def uninstalled() {
-    log.debug("In uninstalled()")
+    // log.debug("In uninstalled()")
 }
 
 def updated() {
@@ -380,6 +382,7 @@ def initialize() {
     switch ("$humidifer_type") {
         case "Separate from HVAC ductwork":
         case "Requires Heat":
+        case "Requires Fan":
             subscribe(humidifier_target, "switch", update_humid_targets)
             subscribe(humidifier_target, "level", update_humid_targets)
     }
@@ -437,11 +440,10 @@ def initialize() {
     atomicState.fan_demand = 0
     atomicState.fan_accept = 0
     atomicState.dehum_accept = 0
-    log.debug("updating zones")
+    atomicState.humid_accept = 0
     tmplist = []
     def zones = getChildApps()
     zones.each { z ->
-        // log.debug("processing zone $z.label")
         if (subzone_ok("", z.label)) {
             tmplist << z.label
             status_device = z.get_status_device()
@@ -468,6 +470,9 @@ def initialize() {
             def dehum_accept_value = status_device.currentValue("dehum_accept")
             atomicState.dehum_accept += dehum_accept_value
             subscribe(status_device, "dehum_accept", child_dehum_accept_Handler)
+            def humid_accept_value = status_device.currentValue("humid_accept")
+            atomicState.humid_accept += humid_accept_value
+            subscribe(status_device, "humid_accept", child_humid_accept_Handler)
         }
     }
     atomicState.main_zones = tmplist
@@ -479,7 +484,8 @@ def initialize() {
     status_device.set_cool_accept(atomicState.cool_accept)
     status_device.set_fan_demand(atomicState.fan_demand)
     status_device.set_fan_accept(atomicState.fan_accept)
-    log.debug("finished updating zones")
+    status_device.set_dehum_accept(atomicState.dehum_accept)
+    status_device.set_humid_accept(atomicState.humid_accept)
     if (wired_tstat) {
         subscribe(wired_tstat, "thermostatOperatingState", wired_tstatHandler)
         wired_tstatHandler() // sets wired mode and calls zone_call_changed()
@@ -661,6 +667,7 @@ def refresh_inputs() {
     new_fan_demand = 0
     new_fan_accept = 0
     new_dehum_accept = 0
+    new_humid_accept = 0
     def zones = getChildApps()
     zones.each { z ->
         if (atomicState.main_zones.findAll { it == z.label }) {
@@ -679,6 +686,8 @@ def refresh_inputs() {
             new_fan_accept += zone_value
             zone_value = status_device.currentValue("dehum_accept")
             new_dehum_accept += zone_value
+            zone_value = status_device.currentValue("humid_accept")
+            new_humid_accept += zone_value
         }
     }
     change = false
@@ -708,6 +717,12 @@ def refresh_inputs() {
         atomicState.dehum_accept = new_dehum_accept
         status_device = getChildDevice("HVACZoning_${app.id}")
         status_device.set_dehum_accept(atomicState.dehum_accept)
+        change = true
+    }
+    if (new_humid_accept != atomicState.humid_accept) {
+        atomicState.humid_accept = new_humid_accept
+        status_device = getChildDevice("HVACZoning_${app.id}")
+        status_device.set_humid_accept(atomicState.humid_accept)
         change = true
     }
     if (change) {
@@ -855,6 +870,28 @@ def child_dehum_accept_Handler(evt=NULL) {
     }
 }
 
+def child_humid_accept_Handler(evt=NULL) {
+    // log.debug("In child_humid_accept_Handler()")
+    new_value = 0
+    def zones = getChildApps()
+    zones.each { z ->
+        if (atomicState.main_zones.findAll { it == z.label }) {
+            status_device = z.get_status_device()
+            def zone_value = status_device.currentValue("humid_accept")
+            new_value += zone_value
+        }
+    }
+    if (new_value != atomicState.humid_accept) {
+        atomicState.humid_accept = new_value
+        status_device = getChildDevice("HVACZoning_${app.id}")
+        status_device.set_humid_accept(atomicState.humid_accept)
+        current_state = status_device.currentValue("current_state")
+        if ("$current_state.value" == "Humid") {
+            runIn(5, update_zones, [misfire: "ignore"])
+        }
+    }
+}
+
 // Equipment Control Routines
 // The variable atomicState.equip_state indicates the current state of heating and cooling equipment.  Possible values are:
 // "Idle": which means that both heating and cooling equipment has been off for long enough that either heating or cooling calls could be served if they occur
@@ -877,7 +914,8 @@ def set_equip_state(String new_state) {
 // "Off": blower is off
 // "On_for_equip": blower is commanded on because cooling or heating is being commanded (user may also be requesting fan and ventilation and/or dehumidification may also be underway)
 // "On_for_vent": blower is commanded on because ventilation is being commanded (heating and cooling off, user may also be requesting fan and dehumidification may be underway)
-// "On_for_dehum": blower is commanded on because humidification is being commanded (heating and cooling off, user may also be requesting fan)
+// "On_for_dehum": blower is commanded on because dehumidification is being commanded (heating and cooling off, user may also be requesting fan)
+// "On_for_humid": blower is commanded on because humidification is being commanded (heating and cooling off, user may also be requesting fan)
 // "On_by_request": blower is commanded on due to fan call from a zone (ventilation, heating, and cooling off)
 
 def set_fan_state(String new_state) {
@@ -1304,12 +1342,25 @@ def update_humidity_equip() {
                         default:
                             state_ok = false
                     }
+                    break
+                case "Requires Fan":
+                    switch ("$atomicState.equip_state") {
+                        case "CoolingL":
+                        case "Cooling":
+                            state_ok = false
+                            break;
+                        default:
+                            state_ok = true
+                    }
+                    break
             }
             if (state_ok && (current_humidity < atomicState.min_humidity_target)) {
                 atomicState.humid_state = "Humidify"
+                update_fan_state()
                 Hum.on()
             } else {
                 Hum.off()
+                update_fan_state()
             }
             break
         default:
@@ -1776,6 +1827,11 @@ def update_fan_state() {
                 G.on()
                 return
             }
+            if (("$atomicState.humid_state" == "Humidify") && ("$humidifer_type" == "Requires Fan")) {
+                set_fan_state("On_for_humid")
+                G.on()
+                return
+            }
             if (atomicState.fan_demand > 0) {
                 if (atomicState.fan_demand+atomicState.off_capacity >= cfmG) {
                     set_fan_state("On_by_request")
@@ -1840,6 +1896,13 @@ def update_zones() {
                     flow = cfmG - atomicState.off_capacity
                     if (flow > atomicState.dehum_accept) {
                        force_flow = flow - atomicState.dehum_accept
+                    }
+                    break
+                case "On_for_humid":
+                    current_state = "Humid"
+                    flow = cfmG - atomicState.off_capacity
+                    if (flow > atomicState.humid_accept) {
+                       force_flow = flow - atomicState.humid_accept
                     }
                     break
                 case "On_by_request":
@@ -1959,12 +2022,25 @@ def update_zones() {
                     break
                 case "Dehum":
                     demand = zone_status_device.currentValue("dehum_accept")
-                    log.debug("zone dehum demand is $demand")
+                    // log.debug("zone dehum demand is $demand")
                     if (demand) {
                         zone_status_device.setState("Dehum", demand + force_flow)
                     } else {
                         if (force_flow) {
                             zone_status_device.setState("Dehum", force_flow)
+                        } else {
+                            zone_status_device.setState("Off", 0)
+                        }
+                    }
+                    break
+                case "Humid":
+                    demand = zone_status_device.currentValue("humid_accept")
+                    // log.debug("zone humid demand is $demand")
+                    if (demand) {
+                        zone_status_device.setState("Humid", demand + force_flow)
+                    } else {
+                        if (force_flow) {
+                            zone_status_device.setState("Humid", force_flow)
                         } else {
                             zone_status_device.setState("Off", 0)
                         }
