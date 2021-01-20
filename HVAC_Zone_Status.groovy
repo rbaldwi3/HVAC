@@ -1,7 +1,7 @@
 /**
  *  HVAC Zone Status
  *
- *  Copyright 2020 Reid Baldwin
+ *  Copyright 2021 Reid Baldwin
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
@@ -22,7 +22,7 @@ metadata {
 		capability "Actuator" // this makes it selectable for custom actions in rule machine
         capability "Refresh" // refresh() ensures that the cumulative time attributes are up to date. Otherwise, the attributes are only updated on state changes.
 	}
-    attribute "current_state", "string" // One of Cooling, Heating, Fan, Vent, Dehum, Off, and Idle - Off means stop flow, Idle means blower not running
+    attribute "current_state", "string" // One of Cooling, Heating, Fan, Vent, Dehum, Humid, Off, and Idle - Off means stop flow, Idle means blower not running
     attribute "flow", "number" // cfm desired in addition to off_capacity
     command "setState", ["string", "number"] // called by equipment control or parent zone
     // these attributes are set by the zone itself based on thermostat and child zone inputs
@@ -40,6 +40,8 @@ metadata {
     command "set_fan_accept", ["number"]
     attribute "dehum_accept", "number"
     command "set_dehum_accept", ["number"]
+    attribute "humid_accept", "number"
+    command "set_humid_accept", ["number"]
     attribute "off_capacity", "number"
     command "set_off_capacity", ["number"]
     // debugging features
@@ -54,17 +56,18 @@ metadata {
     attribute "fan_time", "number" // cumulative fan only time, in seconds
     attribute "idle_time", "number" // cumulative idle time, in seconds
     attribute "dehum_time", "number" // cumulative dehumidification time, in seconds, excludes time that overlaps with ventilation
+    attribute "humid_time", "number" // cumulative humidification time, in seconds, excludes time that overlaps with ventilation
     attribute "runtime_msg", "string"
     command "reset_runtime" // resets all cumulative time attributes to zero
-    attribute "recent_heat", "boolean"
+    attribute "recent_heat", "string"
     command "set_recent_heat", ["boolean"]
-    attribute "recent_cool", "boolean"
+    attribute "recent_cool", "string"
     command "set_recent_cool", ["boolean"]
-    attribute "temp_increasing", "boolean"
+    attribute "temp_increasing", "string"
     command "set_temp_increasing", ["boolean"]
-    attribute "temp_decreasing", "boolean"
+    attribute "temp_decreasing", "string"
     command "set_temp_decreasing", ["boolean"]
-    attribute "offline", "boolean"
+    attribute "offline", "string"
     command "set_offline", ["boolean"]
 }
 
@@ -94,6 +97,7 @@ def initialize() {
     state.cool_accept = 0
     state.fan_accept = 0
     state.dehum_accept = 0
+    state.humid_accept = 0
     set_heat_demand(0)
     set_cool_demand(0)
     set_fan_demand(0)
@@ -101,6 +105,7 @@ def initialize() {
     set_cool_accept(0)
     set_fan_accept(0)
     set_dehum_accept(0)
+    set_humid_accept(0)
     state.off_capacity = 0
     set_off_capacity(0)
     debug("initialized")
@@ -130,12 +135,14 @@ def reset_runtime() {
     state.fan_time = 0
     state.idle_time = 0
     state.dehum_time = 0
+    state.humid_time = 0
     sendEvent(name:"cooling_time", value:state.cooling_time)
     sendEvent(name:"heating_time", value:state.heating_time)
     sendEvent(name:"vent_time", value:state.vent_time)
     sendEvent(name:"fan_time", value:state.fan_time)
     sendEvent(name:"idle_time", value:state.idle_time)
     sendEvent(name:"dehum_time", value:state.dehum_time)
+    sendEvent(name:"humid_time", value:state.dehum_time)
     state.last_change = now()
 }
 
@@ -162,7 +169,11 @@ def add_interval() {
             break;
         case "Dehum":
             state.dehum_time += interval
-            sendEvent(name:"dehum_time", value:state.vent_time)
+            sendEvent(name:"dehum_time", value:state.dehum_time)
+            break;
+        case "Humid":
+            state.humid_time += interval
+            sendEvent(name:"humid_time", value:state.humid_time)
             break;
         case "Idle":
         case "Off":
@@ -189,6 +200,9 @@ def add_interval() {
     }
     if (state.dehum_time) {
         result += "dehum=" + duration_string(state.dehum_time) + " "
+    }
+    if (state.humid_time) {
+        result += "humid=" + duration_string(state.humid_time) + " "
     }
     if (state.idle_time) {
         result += "idle=" + duration_string(state.idle_time)
@@ -298,6 +312,12 @@ def set_dehum_accept(new_value) {
     sendEvent(name:"dehum_accept", value:new_value)
 }
 
+def set_humid_accept(new_value) {
+	// log.debug("In set_humid_accept($new_value)")
+    state.humid_accept = new_value
+    sendEvent(name:"humid_accept", value:new_value)
+}
+
 def set_off_capacity(new_value) {
 	// log.debug("In set_off_capacity($new_value)")
     state.off_capacity = new_value
@@ -306,25 +326,45 @@ def set_off_capacity(new_value) {
 
 def set_recent_heat(new_value) {
 	// log.debug("In set_recent_heat($new_value)")
-    sendEvent(name:"recent_heat", value:new_value)
+    if (new_value) {
+        sendEvent(name:"recent_heat", value:"true")
+    } else {
+        sendEvent(name:"recent_heat", value:"false")
+    }
 }
 
 def set_recent_cool(new_value) {
 	// log.debug("In set_recent_cool($new_value)")
-    sendEvent(name:"recent_cool", value:new_value)
+    if (new_value) {
+        sendEvent(name:"recent_cool", value:"true")
+    } else {
+        sendEvent(name:"recent_cool", value:"false")
+    }
 }
 
 def set_temp_increasing(new_value) {
 	// log.debug("In set_temp_increasing($new_value)")
-    sendEvent(name:"temp_increasing", value:new_value)
+    if (new_value) {
+        sendEvent(name:"temp_increasing", value:"true")
+    } else {
+        sendEvent(name:"temp_increasing", value:"false")
+    }
 }
 
 def set_temp_decreasing(new_value) {
 	// log.debug("In set_temp_decreasing($new_value)")
-    sendEvent(name:"temp_decreasing", value:new_value)
+    if (new_value) {
+        sendEvent(name:"temp_decreasing", value:"true")
+    } else {
+        sendEvent(name:"temp_decreasing", value:"false")
+    }
 }
 
 def set_offline(new_value) {
 	// log.debug("In set_offline($new_value)")
-    sendEvent(name:"offline", value:new_value)
+    if (new_value) {
+        sendEvent(name:"offline", value:"true")
+    } else {
+        sendEvent(name:"offline", value:"false")
+    }
 }
