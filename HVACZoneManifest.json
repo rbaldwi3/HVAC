@@ -27,9 +27,9 @@
   "drivers": [
     {
       "id": "83cd3fdb-97fd-4bd7-b614-332e97f116fc",
-      "name": "HVAC Zoning Status",
+      "name": "HVAC Zone Status",
       "namespace": "rbaldwi3",
-      "location": "https://raw.githubusercontent.com/rbaldwi3/HVAC/master/HVAC_Zoning_Status.groovy",
+      "location": "https://raw.githubusercontent.com/rbaldwi3/HVAC/master/HVAC_Zone_Status.groovy",
       "required": false
     }
   ]
