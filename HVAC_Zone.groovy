@@ -1,7 +1,7 @@
 /**
  *  HVAC Zone
  *
- *  Copyright 2020 Reid Baldwin
+ *  Copyright 2021 Reid Baldwin
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
@@ -180,6 +180,25 @@ def pageTwo() {
                 }
             }
         }
+        section ("Under what conditions should this zone accept humidification?") {
+            input (name:"humid_criteria", type: "enum", required: false, options: ["Below a humidity threshold","When a switch in on","In certain hub modes"],
+                   submitOnChange: true, multiple: true)
+            if (dehum_criteria) {
+                if (dehum_criteria.findAll { it == "Below a humidity threshold" }) {
+                    input "humid_humidity", "capability.relativeHumidityMeasurement", required: true, title: "Humidity sensor for zone"
+                    input "humid_threshold", "number", required: true, title: "Humidity threshold for zone", default: 35, range: "0 . . 100"
+                }
+                if (dehum_criteria.findAll { it == "When a switch in on" }) {
+                    input "humid_switch", "capability.switch", required: true, title: "Switch for accepting humidification"
+                }
+                if (dehum_criteria.findAll { it == "In certain hub modes" }) {
+                    input (name:"humid_modes", type: "mode", required: false, multiple: true, title: "In what hub modes should zone accept humidification?")
+                }
+                if (dehum_criteria.size() > 1) {
+                    input "humid_and", "bool", required: true, title: "Require ALL conditions?", default: false
+                }
+            }
+        }
         section ("Refresh") {
             // time interval for polling in case any signals missed
             input(name:"output_refresh_interval", type:"enum", required: true, title: "Output refresh", options: ["None","Every 5 minutes","Every 10 minutes",
@@ -288,6 +307,18 @@ def initialize() {
             }
         }
     }
+    if (humid_criteria) {
+        if (humid_criteria.findAll { it == "When a switch in on" }) {
+            if (humid_switch) {
+                subscribe(humid_switch, "switch", humid_demandHandler)
+            }
+        }
+        if (humid_criteria.findAll { it == "Below a humidity threshold" }) {
+            if (humid_humidity) {
+                subscribe(humid_humidity, "humidity", humid_demandHandler)
+            }
+        }
+    }
     subscribe(location, "mode", modeHandler)
     atomicState.cool_demand = 0
     atomicState.heat_demand = 0
@@ -299,6 +330,8 @@ def initialize() {
     update_vent_demand()
     atomicState.dehum_accept = 0
     update_dehum_demand()
+    atomicState.humid_accept = 0
+    update_humid_demand()
     switch ("$output_refresh_interval") {
         case "None":
             break
@@ -351,6 +384,7 @@ def initialize() {
                 subscribe(sz, "fan_demand", demandHandler)
                 subscribe(sz, "fan_accept", vent_demandHandler)
                 subscribe(sz, "dehum_accept", dehum_demandHandler)
+                subscribe(sz, "humid_accept", humid_demandHandler)
             } else {
                 log.debug("$sz.label is not an acceptable subzone")
             }
@@ -370,6 +404,7 @@ def refresh_outputs() {
     status_device.set_fan_demand(atomicState.fan_demand)
     status_device.set_fan_accept(atomicState.fan_accept)
     status_device.set_dehum_accept(atomicState.dehum_accept)
+    status_device.set_humid_accept(atomicState.humid_accept)
     update_zone_state()
 }
 
@@ -417,6 +452,7 @@ def refresh_inputs() {
     update_demand()
     update_vent_demand()
     update_dehum_demand()
+    update_humid_demand()
 }
 
 def child_updated() {
@@ -583,16 +619,15 @@ def update_demand() {
                             def subzone_value = sz.currentValue("heat_demand")
                             heat_demand += subzone_value
                             subzone_value = sz.currentValue("heat_accept")
-                            heat_accept += subzone_value
+                            atomicState.child_heat_accept += subzone_value
                         }
                     }
                 }
                 if (heat_demand > 0) {
                     heat_demand += atomicState.on_capacity
-                    atomicState.child_heat_accept = heat_accept
                     heat_accept = 0
                 } else {
-                    atomicState.child_heat_accept = heat_accept - atomicState.on_capacity
+                    heat_accept += atomicState.child_heat_accept
                 }
             }
             // Decide whether this zone is a dump zone for cooling
@@ -674,16 +709,15 @@ def update_demand() {
                             def subzone_value = sz.currentValue("cool_demand")
                             cool_demand += subzone_value
                             subzone_value = sz.currentValue("cool_accept")
-                            cool_accept += subzone_value
+                            atomicState.child_cool_accept += subzone_value
                         }
                     }
                 }
                 if (cool_demand > 0) {
                     cool_demand += atomicState.on_capacity
-                    atomicState.child_cool_accept = cool_accept
                     cool_accept = 0
                 } else {
-                    atomicState.child_cool_accept = cool_accept - atomicState.on_capacity
+                    cool_accept += atomicState.child_cool_accept
                 }
             }
     }
@@ -854,6 +888,75 @@ def update_dehum_demand() {
     }
 }
     
+def update_humid_demand() {
+    // log.debug("In Zone update_humid_demand()")
+    // humid_demand is the capacity that would be accepted if the zone control app decides to run humidification.  It is not a call to the zone control.
+    humid_accept = 0
+    if (humid_criteria) {
+        num_satisfied = 0
+        humid_criteria.each { crit ->
+            switch ("$crit") {
+                case "When a switch in on":
+                    if (humid_switch) {
+                        switch_value = humid_switch.currentValue("switch")
+                        if (switch_value == "on") { num_satisfied++ }
+                    }
+                    break
+                case "In certain hub modes":
+                    if (humid_modes) {
+                        def currMode = location.mode
+                        humid_modes.each { md ->
+                            if ("$currMode" == "$md") { num_satisfied++ }
+                        }
+                    }
+                    break
+                case "Below a humidity threshold":
+                    if (humid_humidity) {
+                        def levelstate = humid_humidity.currentState("humidity")
+                        current_humidity = levelstate.value as Integer
+                        if (current_humidity < humid_threshold) { num_satisfied++ }
+                    }
+                    break
+                default:
+                    log.debug("Unknown humid_criteria $crit")
+            }
+        }
+        if (humid_criteria.size() == 0) {
+            humid_accept = 0
+        } else {
+            if (humid_and) {
+                if (num_satisfied == humid_criteria.size()) {
+                    humid_accept = atomicState.on_capacity
+                } else {
+                    humid_accept = 0
+                }
+            } else {
+                if (num_satisfied > 0) {
+                    humid_accept = atomicState.on_capacity
+                } else {
+                    humid_accept = 0
+                }
+            }
+        }
+    }
+    if (humid_accept > 0) {
+        if (subzones) {
+            subzones.each { sz ->
+                if (atomicState.valid_subzones.findAll { it == sz.label }) {
+                    subzone_value = sz.currentValue("humid_accept")
+                    humid_accept += subzone_value
+                }
+            }
+        }
+    }
+    // log.debug("humid_accept = $humid_accept")
+    if (atomicState.humid_accept != humid_accept) {
+        atomicState.humid_accept = humid_accept
+        status_device = get_status_device()
+        status_device.set_humid_accept(humid_accept)
+    }
+}
+    
 def no_cool_for_an_hour() {
     // log.debug("In no_cool_for_an_hour()")
     atomicState.cool_in_last_hour = false
@@ -876,6 +979,7 @@ def no_change_for_three_hours() {
     update_demand()
     status_device = get_status_device()
     status_device.set_offline(true)
+    // status_device.debug("Thermostat is offline")
 }
 
 def update_state() {
@@ -887,12 +991,13 @@ def update_state() {
             atomicState.heat_in_last_hour = true;
             status_device.set_recent_heat(true)
             switch ("$new_state") {
+                case "heating":
+                    break
                 case "cooling":
                     atomicState.cool_in_last_hour = true;
                     status_device.set_recent_cool(true)
                     unschedule("no_cool_for_an_hour")
-                case "fan only":
-                case "idle":
+                default:
                     runIn(3600, "no_heat_for_an_hour", [misfire: "ignore"])
                     break
             }
@@ -901,12 +1006,13 @@ def update_state() {
             atomicState.cool_in_last_hour = true;
             status_device.set_recent_cool(true)
             switch ("$new_state") {
+                case "cooling":
+                    break
                 case "heating":
                     atomicState.heat_in_last_hour = true;
                     status_device.set_recent_heat(true)
                     unschedule("no_heat_for_an_hour")
-                case "fan only":
-                case "idle":
+                default:
                     runIn(3600, "no_cool_for_an_hour", [misfire: "ignore"])
                     break
             }
@@ -1015,9 +1121,7 @@ def tempHandler(evt=NULL) {
     // changes in temperature from the thermostat do not directly result in heating or cooling calls - those result from operating state changes
     // changes in temperature may result in a zone becoming a dump zone or not, which can start or ending cooling call or heating call from subzones
     // log.debug("In Zone tempHandler()")
-    if (update_temp()) {
-        update_demand()
-    } else if (!atomicState.change_for_three_hours) {
+    if (update_temp() || !atomicState.change_for_three_hours) {
         atomicState.change_for_three_hours = true
         status_device = get_status_device()
         status_device.set_offline(false)
@@ -1137,6 +1241,7 @@ def modeHandler(evt=NULL) {
     update_demand()
     update_vent_demand()
     update_dehum_demand()
+    update_humid_demand()
 }
 
 def switchHandler(evt=NULL) {
@@ -1262,6 +1367,19 @@ def update_zone_state() {
                 }
             }
             break
+        case "Humid":
+            turn_on()
+            if (atomicState.humid_accept) { // This zone had requested humidification
+                child_demand = atomicState.humid_accept - atomicState.on_capacity
+                if (atomicState.current_flow > atomicState.on_capacity + child_demand) {
+                    child_force = atomicState.current_flow - atomicState.on_capacity - child_demand
+                }
+            } else { // This zone is being forced to accept flow
+                if (atomicState.current_flow > atomicState.on_capacity) {
+                    child_force = atomicState.current_flow - atomicState.on_capacity
+                }
+            }
+            break
         case "Fan":
             turn_on()
             if (atomicState.fan_demand) { // This zone had requested fan
@@ -1283,7 +1401,7 @@ def update_zone_state() {
             break
     }
     status_device = getChildDevice(atomicState.status_DNI)
-    // log.debug("child_demand = $child_demand, child_accept = $child_accept, child_force = $child_force")
+    // log.debug("child_demand = $child_demand, child_accept = $child_accept, child_force = $child_force, atomicState.child_heat_accept = $atomicState.child_heat_accept")
     if (subzones) {
         subzones.each { sz ->
             if (atomicState.valid_subzones.findAll { it == sz.label }) {
@@ -1297,7 +1415,7 @@ def update_zone_state() {
                             if (child_force) {
                                 sz.setState("Heating", accept + child_force)
                             } else {
-                                if (accept) {
+                                if (atomicState.child_heat_accept) {
                                     Integer sub_flow = accept * child_accept / atomicState.child_heat_accept
                                     sz.setState("Heating", sub_flow)
                                 } else {
@@ -1315,7 +1433,7 @@ def update_zone_state() {
                             if (child_force) {
                                 sz.setState("Cooling", accept + child_force)
                             } else {
-                                if (accept) {
+                                if (atomicState.child_cool_accept) {
                                     Integer sub_flow = accept * child_accept / atomicState.child_cool_accept
                                     sz.setState("Cooling", sub_flow)
                                 } else {
@@ -1355,6 +1473,18 @@ def update_zone_state() {
                         } else {
                             if (child_force) {
                                 sz.setState("Dehum", child_force)
+                            } else {
+                                sz.setState("Off", 0)
+                            }
+                        }
+                        break
+                    case "Humid":
+                        demand = sz.currentValue("humid_accept")
+                        if (demand) {
+                            sz.setState("Humid", demand + child_force)
+                        } else {
+                            if (child_force) {
+                                sz.setState("Humid", child_force)
                             } else {
                                 sz.setState("Off", 0)
                             }
