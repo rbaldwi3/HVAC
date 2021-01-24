@@ -30,7 +30,7 @@
       "name": "HVAC Zone Status",
       "namespace": "rbaldwi3",
       "location": "https://raw.githubusercontent.com/rbaldwi3/HVAC/master/HVAC_Zone_Status.groovy",
-      "required": false
+      "required": true
     }
   ]
 }
