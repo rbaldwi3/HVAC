@@ -24,24 +24,26 @@ metadata {
 	}
     attribute "cooling", "number" // current cooling rate (kbtu/hr)
     command "set_cooling", ["number"]
-    attribute "heating", "number"
+    attribute "heating", "number" // current heating rate (kbtu/hr)
     command "set_heating", ["number"]
     attribute "cum_cooling", "number" // cooling since last reset (btu)
-    attribute "cum_heating", "number"
+    attribute "cum_heating", "number" // heating since last reset (btu)
     attribute "prev_cooling", "number" // previous period cooling (kbtu)
-    attribute "prev_heating", "number"
-    command "reset"
+    attribute "prev_heating", "number" // previous period heating (kbtu)
+    attribute "prev_date", "date" // date and time of last reset
+    command "set_reset_time", ["integer", "integer"] // time to reset each day, arguments are hours and minutes
 }
 
 def installed() {
     log.debug("In installed()")
+    state.reset_hours = 23
+    state.reset_minutes = 30
+    schedule("0 30 23 * * ?","reset")
     initialize()
 }
 
 def updated() {
     log.debug("In updated()")
-    unsubscribe()
-    unschedule()
     initialize()
 }
 
@@ -66,18 +68,19 @@ def reset() {
     sendEvent(name:"cum_cooling", value:0)
     prev = state.cum_heating / 10 + 0.5
     sendEvent(name:"prev_heating", value:(prev / 100))
-    state.cum_cooling = 0
+    state.cum_heating = 0
     sendEvent(name:"cum_heating", value:0)
+    Date reset_date = timeToday("$state.reset_hours:$state.reset_minutes", location.timezone)
+    sendEvent(name:"prev_date", value:reset_date)
 }
 
 def update_cooling(Number new_value) {
 	log.debug("In update_cooling($new_value)")
-    avg = (state.cooling + new_value) / 2
     duration = now() - state.cooling_time
-    state.cum_cooling += avg * duration / 60 / 60
+    state.cooling_time = now()
+    state.cum_cooling += state.cooling * duration / 60 / 60
     Integer rounded = state.cum_cooling + 0.5
     sendEvent(name:"cum_cooling", value:rounded)
-    state.cooling_time = now()
     state.cooling = new_value
     sendEvent(name:"cooling", value:new_value)
 }
@@ -95,12 +98,11 @@ def set_cooling(Number new_value) {
 
 def update_heating(Number new_value) {
 	log.debug("In update_heating($new_value)")
-    avg = (state.heating + new_value) / 2
     duration = now() - state.heating_time
-    state.cum_heating += avg * duration / 60 / 60
+    state.heating_time = now()
+    state.cum_heating += state.heating * duration / 60 / 60
     Integer rounded = state.cum_heating + 0.5
     sendEvent(name:"cum_heating", value:rounded)
-    state.heating_time = now()
     state.heating = new_value
     sendEvent(name:"heating", value:new_value)
 }
@@ -114,4 +116,16 @@ def set_heating(Number new_value) {
         state.heating = new_value
         sendEvent(name:"heating", value:new_value)
     }
+}
+
+def set_reset_time(Integer hours, Integer minutes) {
+	log.debug("In set_reset_time($hours:$minutes)")
+    if (hours < 0) { return }
+    if (hours > 23) { return }
+    if (minutes < 0) { return }
+    if (minutes > 59) { return }
+    unschedule()
+    schedule("0 $minutes $hours * * ?","reset")
+    state.reset_hours = hours
+    state.reset_minutes = minutes
 }
