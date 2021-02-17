@@ -41,10 +41,10 @@ metadata {
     command "set_dewpoint", ["number"]
     attribute "DPM", "number"
     attribute "prev_DPD", "number"
-    attribute "UVI", "number"
-    command "set_UVI", ["number"]
-    attribute "UVIM", "number"
-    attribute "prev_UVIH", "number"
+    attribute "wind", "number"
+    command "set_wind", ["number"]
+    attribute "WM", "number"
+    attribute "prev_WD", "number"
     attribute "prev_date", "date" // date and time of last reset
     command "set_reset_time", ["integer", "integer"] // time to reset each day, arguments are hours and minutes
 }
@@ -94,7 +94,7 @@ def refresh() {
     if (state.temperature_time) { update_temperature(state.temperature) }
     if (state.illuminance_time) { update_illuminance(state.illuminance) }
     if (state.dewpoint_time) { update_dewpoint(state.dewpoint) }
-    if (state.uvi_time) { update_uvi(state.uvi) }
+    if (state.wind_time) { update_wind(state.wind) }
 }
 
 def reset() {
@@ -107,11 +107,11 @@ def reset() {
         sendEvent(name:"IM", value:0)
     }
     // ultraviolet index
-    if (state.uvi_time) {
-        Integer prev = state.UVIM * 10 / 6
-        sendEvent(name:"prev_UVIH", value:(prev / 100))
-        state.UVIM = 0
-        sendEvent(name:"UVIM", value:0)
+    if (state.wind_time) {
+        Integer prev = state.WM * 10 / 6 / 24
+        sendEvent(name:"prev_WD", value:(prev / 100))
+        state.WM = 0
+        sendEvent(name:"WM", value:0)
     }
     // dewpoint
     if (state.dewpoint_time) {
@@ -212,26 +212,26 @@ def set_dewpoint(Number new_value) {
     }
 }
 
-def update_uvi(Number new_value) {
-	log.debug("In update_uvi($new_value)")
-    avg = (state.uvi + new_value) / 2
-    duration = now() - state.uvi_time
-    state.uvi_time = now()
-    state.UVIM += avg * duration / 60 / 1000
-    Integer rounded = state.UVIM + 0.5
-    sendEvent(name:"UVIM", value:rounded)
-    state.uvi = new_value
-    sendEvent(name:"UVI", value:new_value)
+def update_wind(Number new_value) {
+	log.debug("In update_wind($new_value)")
+    avg = (state.wind + new_value) / 2
+    duration = now() - state.wind_time
+    state.wind_time = now()
+    state.WM += avg * duration / 60 / 1000
+    Integer rounded = state.WM + 0.5
+    sendEvent(name:"WM", value:rounded)
+    state.wind = new_value
+    sendEvent(name:"wind", value:new_value)
 }
 
-def set_UVI(Number new_value) {
-	log.debug("In set_uvi($new_value)")
-    if (state.uvi_time) {
-        update_uvi(new_value)
+def set_wind(Number new_value) {
+	log.debug("In set_wind($new_value)")
+    if (state.wind_time) {
+        update_wind(new_value)
     } else {
-        state.uvi_time = now()
-        state.uvi = new_value
-        sendEvent(name:"UVI", value:new_value)
+        state.wind_time = now()
+        state.wind = new_value
+        sendEvent(name:"wind", value:new_value)
     }
 }
 
