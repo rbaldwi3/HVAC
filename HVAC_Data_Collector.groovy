@@ -339,13 +339,14 @@ Number get_value(Map data, String typ, String month_key, String day_key) {
 }
 
 def set_value(Number value, Map source_data, String typ, String month_key, String day_key) {
+    log.debug("In set_value($value, $source_data, $typ, $month_key, $day_key)")
     Map typ_data = source_data["$typ"]
     if (typ_data) {
         Map month_data = typ_data["$month_key"]
         if (month_data) {
-            Map day_data = month_data["$day_key"]
+            Number day_data = month_data["$day_key"]
             if (day_data) {
-                day_data["$day_key"] = value
+                month_data["$day_key"] = value
             } else {
                 month_data << ["$day_key" : value]
             }
@@ -358,6 +359,7 @@ def set_value(Number value, Map source_data, String typ, String month_key, Strin
 }
 
 def set_condition(Number value, String sensor, String typ, String month_key, String day_key) {
+    log.debug("In set_condition($value, $sensor, $typ, $month_key, $day_key)")
     if (state.sensors) {
         Map sensor_data = state.sensors["$sensor"]
         if (sensor_data) {
@@ -371,6 +373,7 @@ def set_condition(Number value, String sensor, String typ, String month_key, Str
 }
 
 Number get_condition(String sensor, String typ, String month_key, String day_key) {
+    log.debug("In get_condition($source, $typ, $month_key, $day_key)")
     if (state.sensors) {
         Map sensor_data = state.sensors["$sensor"]
         if (sensor_data) {
@@ -380,6 +383,7 @@ Number get_condition(String sensor, String typ, String month_key, String day_key
 }
 
 def set_load(Number value, String source, String typ, String month_key, String day_key) {
+    // log.debug("In set_load($source, $typ, $month_key, $day_key)")
     if (state.loads) {
         Map source_data = state.loads["$source"]
         if (source_data) {
@@ -432,6 +436,7 @@ def delete_sensor_data(List sensors, String month_key, String day_key) {
                 delete_data(sensor_data["CDD"], month_key, day_key)
                 delete_data(sensor_data["DPD"], month_key, day_key)
                 delete_data(sensor_data["ID"], month_key, day_key)
+                delete_data(sensor_data["WD"], month_key, day_key)
             }
         }
     }
@@ -717,7 +722,7 @@ Map available_data() {
 }
 
 def new_zone_data(String source, Date date, Number heat_load, Number cool_load) {
-    log.debug("In new_zone_data($source, $date, $heat_load, $cool_load)")
+    // log.debug("In new_zone_data($source, $date, $heat_load, $cool_load)")
     int month = date.getMonth() + date.getYear() * 12
     int day = date.getDate()
     int day_of_week = date.getDay()
@@ -860,27 +865,28 @@ def new_sensor_data(String source, Date date, Number heating, Number cooling, Nu
     }
     wind_sensors.each { ws ->
         if ("$ws" == "$source") {
+            set_condition(wind, source, "WD", "$month", "$day")
             if (state.wind) {
                 Map source_data = state.wind["$source"]
                 if (source_data) {
                     Map month_data = source_data["$month"]
                     if (month_data) {
-                        month_data << ["$day" : ultravioletIndex]
+                        month_data << ["$day" : wind]
                     } else {
-                        source_data << ["$month" : ["$day" : ultravioletIndex]]
+                        source_data << ["$month" : ["$day" : wind]]
                     }
                 } else {
-                    state.wind << ["$source" : ["$month" : ["$day" : ultravioletIndex]]]
+                    state.wind << ["$source" : ["$month" : ["$day" : wind]]]
                 }
             } else {
-                state.wind = ["$source" : ["$month" : ["$day" : ultravioletIndex]]]
+                state.wind = ["$source" : ["$month" : ["$day" : wind]]]
             }
         }
     }
 }
 
 def delete_zone_data(String month_key, String day_key) {
-    log.debug("In delete_zone_data($month_key, $day_key)")
+    // log.debug("In delete_zone_data($month_key, $day_key)")
     if (state.day_of_week) {
         Map month_data = state.day_of_week["$month_key"]
         if (month_data) {
@@ -915,7 +921,7 @@ def delete_zone_data(String month_key, String day_key) {
 }
 
 def delete_sensor_data(String month_key, String day_key) {
-    log.debug("In delete_sensor_data($month_key, $day_key)")
+    // log.debug("In delete_sensor_data($month_key, $day_key)")
     heating_sensors.each { hs ->
         if (state.heating) {
             Map sensor_data = state.heating["$hs"]
@@ -979,6 +985,7 @@ def delete_sensor_data(String month_key, String day_key) {
 }
 
 Map get_loads(String source, String typ) {
+    // log.debug "In get_loads $sensor $typ"
     if (state.loads) {
         typ_loads = state.loads["$source"]
         if (typ_loads) {
@@ -988,6 +995,7 @@ Map get_loads(String source, String typ) {
 }
 
 Map get_conditions(String sensor, String typ) {
+    log.debug "In get_conditions $sensor $typ"
     if (state.sensors) {
         typ_conds = state.sensors["$sensor"]
         if (typ_conds) {
@@ -997,6 +1005,7 @@ Map get_conditions(String sensor, String typ) {
 }
 
 def merge(Map source_data, typ, Map data, Map month_keys, Map day_keys, List points) {
+    log.debug "In merge1"
     // log.debug "source_data = $source_data"
     // log.debug "data = $data"
     // log.debug "month_keys = $month_keys"
@@ -1022,26 +1031,33 @@ def merge(Map source_data, typ, Map data, Map month_keys, Map day_keys, List poi
             }
         }
     } else {
-        source_data << ["$typ" : ["$m_key" : ["$d_key" : data_point]]]
+        source_data << ["$typ" : data]
     }
 }
 
 def merge_conditions(Map data, String sensor, String typ, Map month_keys, Map day_keys, List points) {
-    log.debug "In merge_load $sensor $typ"
+    log.debug "In merge_conditions($sensor, $typ)"
+    log.debug "data = $data"
     if (state.sensors) {
         Map sensor_data = state.sensors["$sensor"]
         if (sensor_data) {
+            log.debug "merging data for sensor"
             merge(sensor_data, typ, data, month_keys, day_keys, points)
+            log.debug "state.sensors = ${state.sensors}"
         } else {
-            state.sensors["$source"] = ["$typ" : data]
+            log.debug "adding data for sensor"
+            state.sensors["$sensor"] = ["$typ" : data]
+            log.debug "state.sensors = ${state.sensors}"
         }
     } else {
-        state.sensors = ["$source" : ["$typ" : data]]
+        log.debug "creating state.sensors"
+        state.sensors = ["$sensor" : ["$typ" : data]]
+        log.debug "state.sensors = ${state.sensors}"
     }
 }
 
 def new_condition(Map data, String sensor, String typ, Map month_keys, Map day_keys, List points) {
-    log.debug "In new_load $sensor $typ"
+    log.debug "In new_condition($sensor, $typ)"
     switch (typ) {
         case "HDD":
             heating_sensors.each { hs ->
@@ -1082,7 +1098,7 @@ def new_condition(Map data, String sensor, String typ, Map month_keys, Map day_k
 }
 
 def merge_load(Map data, String source, String typ, Map month_keys, Map day_keys, List points) {
-    log.debug "In merge_load $source $typ"
+    // log.debug "In merge_load $source $typ"
     if (state.loads) {
         Map source_data = state.loads["$source"]
         if (source_data) {
@@ -1096,7 +1112,7 @@ def merge_load(Map data, String source, String typ, Map month_keys, Map day_keys
 }
 
 def new_load(Map data, String source, String typ, Map month_keys, Map day_keys, List points) {
-    log.debug "In new_load $source $typ"
+    // log.debug "In new_load $source $typ"
     switch (typ) {
         case "heat_load":
             heat_loads.each { hl ->
@@ -1116,6 +1132,7 @@ def new_load(Map data, String source, String typ, Map month_keys, Map day_keys, 
 }
 
 def merge(Map source_data, Map data, Map month_keys, Map day_keys, List points) {
+    log.debug "In merge2"
     // log.debug "source_data = $source_data"
     // log.debug "data = $data"
     // log.debug "month_keys = $month_keys"
@@ -1141,6 +1158,7 @@ def merge(Map source_data, Map data, Map month_keys, Map day_keys, List points) 
 }
 
 Map get_heat_load(String source) {
+    // log.debug "In get_heat_load $sensor"
     if (state.heat_load) {
         return state.heat_load["$source"]
     } else {
@@ -1149,7 +1167,7 @@ Map get_heat_load(String source) {
 }
 
 def new_heat_load(Map data, String source, Map month_keys, Map day_keys, List points) {
-    log.debug "In new_heat_load $source"
+    // log.debug "In new_heat_load $source $month_keys $day_keys $points"
     heat_loads.each { hl ->
         if ("$hl" == "$source") {
             if (state.heat_load) {
@@ -1167,6 +1185,7 @@ def new_heat_load(Map data, String source, Map month_keys, Map day_keys, List po
 }
 
 Map get_cool_load(String source) {
+    // log.debug "In get_cool_load $sensor"
     if (state.cool_load) {
         return state.cool_load["$source"]
     } else {
@@ -1175,7 +1194,7 @@ Map get_cool_load(String source) {
 }
 
 def new_cool_load(Map data, String source, Map month_keys, Map day_keys, List points) {
-    log.debug "In new_cool_load $source"
+    // log.debug "In new_cool_load $source $month_keys $day_keys, $points"
     cool_loads.each { cl ->
         if ("$cl" == "$source") {
             if (state.cool_load) {
@@ -1193,6 +1212,7 @@ def new_cool_load(Map data, String source, Map month_keys, Map day_keys, List po
 }
 
 Map get_heating_days(String sensor) {
+    // log.debug "In get_heating_days $sensor"
     if (state.heating) {
         return state.heating["$sensor"]
     } else {
@@ -1201,7 +1221,7 @@ Map get_heating_days(String sensor) {
 }
 
 def new_heating_days(Map data, String sensor, Map month_keys, Map day_keys, List points) {
-    log.debug "In new_heating_days $sensor"
+    // log.debug "In new_heating_days $sensor"
     heating_sensors.each { hs ->
         if ("$hs" == "$sensor") {
             if (state.heating) {
@@ -1219,6 +1239,7 @@ def new_heating_days(Map data, String sensor, Map month_keys, Map day_keys, List
 }
 
 Map get_cooling_days(String sensor) {
+    // log.debug "In get_cooling_days $sensor"
     if (state.cooling) {
         return state.cooling["$sensor"]
     } else {
@@ -1227,7 +1248,7 @@ Map get_cooling_days(String sensor) {
 }
 
 def new_cooling_days(Map data, String sensor, Map month_keys, Map day_keys, List points) {
-    log.debug "In new_cooling_days $sensor"
+    // log.debug "In new_cooling_days $sensor"
     cooling_sensors.each { hs ->
         if ("$hs" == "$sensor") {
             if (state.cooling) {
@@ -1245,6 +1266,7 @@ def new_cooling_days(Map data, String sensor, Map month_keys, Map day_keys, List
 }
 
 Map get_dewpoint_days(String sensor) {
+    // log.debug "In get_dewpoint_days $sensor"
     if (state.dewpoint) {
         return state.dewpoint["$sensor"]
     } else {
@@ -1253,7 +1275,7 @@ Map get_dewpoint_days(String sensor) {
 }
 
 def new_dewpoint_days(Map data, String sensor, Map month_keys, Map day_keys, List points) {
-    log.debug "In new_dewpoint_days $sensor"
+    // log.debug "In new_dewpoint_days $sensor"
     dewpoint_sensors.each { hs ->
         if ("$hs" == "$sensor") {
             if (state.dewpoint) {
@@ -1271,6 +1293,7 @@ def new_dewpoint_days(Map data, String sensor, Map month_keys, Map day_keys, Lis
 }
 
 Map get_illuminance_days(String sensor) {
+    // log.debug "In get_illuminance_days $sensor"
     if (state.illuminance) {
         return state.illuminance["$sensor"]
     } else {
@@ -1279,7 +1302,7 @@ Map get_illuminance_days(String sensor) {
 }
 
 def new_illuminance_days(Map data, String sensor, Map month_keys, Map day_keys, List points) {
-    log.debug "In new_illuminance_days $sensor"
+    // log.debug "In new_illuminance_days $sensor"
     illuminance_sensors.each { hs ->
         if ("$hs" == "$sensor") {
             if (state.illuminance) {
@@ -1297,7 +1320,7 @@ def new_illuminance_days(Map data, String sensor, Map month_keys, Map day_keys, 
 }
 
 Map get_wind_days(String sensor) {
-    log.debug "In get_wind_days($sensor)"
+    // log.debug "In get_wind_days($sensor)"
     if (state.wind) {
         return state.wind["$sensor"]
     } else {
@@ -1306,7 +1329,7 @@ Map get_wind_days(String sensor) {
 }
 
 def new_wind_days(Map data, String sensor, Map month_keys, Map day_keys, List points) {
-    log.debug "In new_wind_days $sensor"
+    // log.debug "In new_wind_days $sensor"
     wind_sensors.each { hs ->
         if ("$hs" == "$sensor") {
             if (state.wind) {
@@ -1324,7 +1347,7 @@ def new_wind_days(Map data, String sensor, Map month_keys, Map day_keys, List po
 }
 
 def new_day_data(Map data, Map month_keys, Map day_keys, List points) {
-    log.debug "In new_day_data"
+    // log.debug "In new_day_data"
     if (state.day_of_week) {
         merge(state.day_of_week, data, month_keys, day_keys, points)
     } else {
