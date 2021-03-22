@@ -18,6 +18,9 @@
  *            - Added reporting via HVAC Zone Status device
  *            - Misc. robustness improvements
  * version 0.3 - restructured so apps communicate via HVAC Zone Status virtual devices
+ *            - Added humdifier and dehumidifier controls
+ *            - Misc. robustness improvements
+ * version 1.0 - 
  */
 
 definition(
@@ -69,17 +72,17 @@ preferences {
 
 def pageTwo() {
     dynamicPage(name: "pageTwo") {
-        section ("Blower Data") {
+        section ("Equipment Output") {
             switch ("$equip_type") {
                 case "Furnace only":
                 case "Furnace and Air Conditioning":
                     switch ("$heat_type") {
                         case "Single stage":
-                            input "cfmW1", "number", required: true, title: "Airflow for heating (cfm)", range: "200 . . 3000"
+                            input "capW1", "number", required: false, title: "Heating output (kbtu/hr)", range: "12 . . 120", submitOnChange: true
                             break
                         case "Two stage":
-                            input "cfmW1", "number", required: true, title: "Airflow for heating stage 1 (cfm)", range: "200 . . 3000"
-                            input "cfmW2", "number", required: true, title: "Airflow for heating stage 2 (cfm)", range: "200 . . 3000"
+                            input "capW1", "number", required: false, title: "Stage 1 heating output (kbtu/hr)", range: "12 . . 120", submitOnChange: true
+                            input "capW2", "number", required: false, title: "Stage 2 heating output (kbtu/hr)", range: "12 . . 120", submitOnChange: true
                             break
                     }
             }
@@ -88,11 +91,69 @@ def pageTwo() {
                 case "Furnace and Air Conditioning":
                     switch ("$cool_type") {
                         case "Single stage":
-                            input "cfmY1", "number", required: true, title: "Airflow for cooling (cfm)", range: "200 . . 3000"
+                            input "capY1", "number", required: false, title: "Cooling output (kbtu/hr)", range: "6 . . 120", submitOnChange: true
                             break
                         case "Two stage":
-                            input "cfmY1", "number", required: true, title: "Airflow for cooling stage 1 (cfm)", range: "200 . . 3000"
-                            input "cfmY2", "number", required: true, title: "Airflow for cooling stage 2 (cfm)", range: "200 . . 3000"
+                            input "capY1", "number", required: false, title: "Stage 1 cooling output (kbtu/hr)", range: "6 . . 120", submitOnChange: true
+                            input "capY2", "number", required: false, title: "Stage 2 cooling output (kbtu/hr)", range: "6 . . 120", submitOnChange: true
+                            break
+                    }
+            }
+        }
+        section ("Blower Data") {
+            switch ("$equip_type") {
+                case "Furnace only":
+                case "Furnace and Air Conditioning":
+                    switch ("$heat_type") {
+                        case "Single stage":
+                            if (capW1) {
+                                est = capW1 * 20
+                                input "cfmW1", "number", required: true, title: "Airflow for heating (cfm) (suggest $est based on output)", range: "200 . . 3600"
+                            } else {
+                                input "cfmW1", "number", required: true, title: "Airflow for heating (cfm)", range: "200 . . 3600"
+                            }
+                            break
+                        case "Two stage":
+                            if (capW1) {
+                                est = capW1 * 20
+                                input "cfmW1", "number", required: true, title: "Airflow for heating stage 1 (cfm) (suggest $est based on output)", range: "200 . . 3600"
+                            } else {
+                                input "cfmW1", "number", required: true, title: "Airflow for heating stage 1 (cfm)", range: "200 . . 3600"
+                            }
+                            if (capW2) {
+                                est = capW2 * 20
+                                input "cfmW2", "number", required: true, title: "Airflow for heating stage 2 (cfm) (suggest $est based on output)", range: "200 . . 3600"
+                            } else {
+                                input "cfmW2", "number", required: true, title: "Airflow for heating stage 2 (cfm)", range: "200 . . 3600"
+                            }
+                            break
+                    }
+            }
+            switch ("$equip_type") {
+                case "Air Conditioning only":
+                case "Furnace and Air Conditioning":
+                    switch ("$cool_type") {
+                        case "Single stage":
+                            if (capY1) {
+                                est = capY1 * 200 / 6
+                                input "cfmY1", "number", required: true, title: "Airflow for cooling (cfm) (suggest $est based on output)", range: "200 . . 5000"
+                            } else {
+                                input "cfmY1", "number", required: true, title: "Airflow for cooling (cfm)", range: "200 . . 5000"
+                            }
+                            break
+                        case "Two stage":
+                            if (capY1) {
+                                est = capY1 * 200 / 6
+                                input "cfmY1", "number", required: true, title: "Airflow for cooling stage 1 (cfm) (suggest $est based on output)", range: "200 . . 5000"
+                            } else {
+                                input "cfmY1", "number", required: true, title: "Airflow for cooling stage 1 (cfm)", range: "200 . . 5000"
+                            }
+                            if (capY2) {
+                                est = capY2 * 200 / 6
+                                input "cfmY2", "number", required: true, title: "Airflow for cooling stage 2 (cfm) (suggest $est based on output)", range: "200 . . 5000"
+                            } else {
+                                input "cfmY2", "number", required: true, title: "Airflow for cooling stage 2 (cfm)", range: "200 . . 5000"
+                            }
                             break
                     }
             }
@@ -349,7 +410,7 @@ def updated() {
 }
 
 def initialize() {
-    // log.debug("In initialize()")
+    log.debug("In initialize()")
     // Subscribe to state changes for inputs and set state variables to reflect their current values
     switch ("$vent_type") {
         case "Requires Blower":
@@ -477,15 +538,17 @@ def initialize() {
     }
     atomicState.main_zones = tmplist
     status_device = getChildDevice("HVACZoning_${app.id}")
-    status_device.set_off_capacity(atomicState.off_capacity)
-    status_device.set_heat_demand(atomicState.heat_demand)
-    status_device.set_heat_accept(atomicState.heat_accept)
-    status_device.set_cool_demand(atomicState.cool_demand)
-    status_device.set_cool_accept(atomicState.cool_accept)
-    status_device.set_fan_demand(atomicState.fan_demand)
-    status_device.set_fan_accept(atomicState.fan_accept)
-    status_device.set_dehum_accept(atomicState.dehum_accept)
-    status_device.set_humid_accept(atomicState.humid_accept)
+    if (status_device) {
+        status_device.set_off_capacity(atomicState.off_capacity)
+        status_device.set_heat_demand(atomicState.heat_demand)
+        status_device.set_heat_accept(atomicState.heat_accept)
+        status_device.set_cool_demand(atomicState.cool_demand)
+        status_device.set_cool_accept(atomicState.cool_accept)
+        status_device.set_fan_demand(atomicState.fan_demand)
+        status_device.set_fan_accept(atomicState.fan_accept)
+        status_device.set_dehum_accept(atomicState.dehum_accept)
+        status_device.set_humid_accept(atomicState.humid_accept)
+    }
     if (wired_tstat) {
         subscribe(wired_tstat, "thermostatOperatingState", wired_tstatHandler)
         wired_tstatHandler() // sets wired mode and calls zone_call_changed()
@@ -614,17 +677,17 @@ def refresh_outputs() {
 
 def refresh_inputs() {
     // log.debug("In refresh_inputs()")
-    if (vent_control.hasCapability("Refresh")) {
-        vent_control.refresh()
-    }
-    if (vent_force) {
-        if (vent_force.hasCapability("Refresh")) {
-            vent_force.refresh()
-        }
-    }
     switch ("$vent_type") {
         case "Requires Blower":
         case "Doesn't Require Blower":
+            if (vent_control.hasCapability("Refresh")) {
+                vent_control.refresh()
+            }
+            if (vent_force) {
+                if (vent_force.hasCapability("Refresh")) {
+                    vent_force.refresh()
+                }
+            }
             def vent_value = vent_control.currentValue("switch")
             def force_value = "off"
             if (vent_force) {
@@ -1853,11 +1916,20 @@ def update_fan_state() {
 }
 
 def update_zones() {
-    // log.debug("In update_zones()")
+    log.debug("In update_zones()")
     def flow = 0
     def accept_flow = 0
     def force_flow = 0
     def current_state = "TBD"
+    Number heat_output = 0
+    Number cool_output = 0
+    Number vent_output = 0
+    switch ("$atomicState.vent_state") {
+        case "Forced": 
+        case "Running":
+        case "End_Phase":
+            vent_output = 100
+    }
     status_device = getChildDevice("HVACZoning_${app.id}")
     switch ("$atomicState.equip_state") {
         case "Idle":
@@ -1922,8 +1994,14 @@ def update_zones() {
             current_state = "Heating"
             if (atomicState.second_stage) {
                 flow = cfmW2 - atomicState.off_capacity
+                if (capW2) {
+                    heat_output = capW2
+                }
             } else {
                 flow = cfmW1 - atomicState.off_capacity
+                if (capW1) {
+                    heat_output = capW1
+                }
             }
             if (flow > atomicState.heat_demand) {
                 accept_flow = flow - atomicState.heat_demand
@@ -1937,8 +2015,14 @@ def update_zones() {
             current_state = "Cooling"
             if (atomicState.second_stage) {
                 flow = cfmY2 - atomicState.off_capacity
+                if (capY2) {
+                    cool_output = capY2
+                }
             } else {
                 flow = cfmY1 - atomicState.off_capacity
+                if (capY1) {
+                    cool_output = capY1
+                }
             }
             if (flow > atomicState.cool_demand) {
                 accept_flow = flow - atomicState.cool_demand
@@ -1949,25 +2033,35 @@ def update_zones() {
             break
     }
     // log.debug("state = $current_state, flow = $flow, accept_flow = $accept_flow, force_flow = $force_flow")
-    status_device.setState(current_state, flow)
+    if (status_device) {
+        status_device.setState(current_state, flow)
+        status_device.set_heat_output(heat_output)
+        status_device.set_cool_output(cool_output)
+        status_device.set_vent_output(vent_output)
+    }
+    def total_flow = atomicState.off_capacity
     def zones = getChildApps()
     zones.each { z ->
+        // log.debug("checking zone $z.label")
         if (atomicState.main_zones.findAll { it == z.label }) {
+            // log.debug("updating state and flow for zone $z.label")
             zone_status_device = z.get_status_device()
-            // log.debug("updating zone $z.label")
             switch ("$current_state") {
                 case "Heating":
                     demand = zone_status_device.currentValue("heat_demand")
                     if (demand) {
                         zone_status_device.setState("Heating", demand + force_flow)
+                        total_flow += demand + force_flow
                     } else {
                         accept = zone_status_device.currentValue("heat_accept")
                         if (force_flow) {
                             zone_status_device.setState("Heating", accept + force_flow)
+                            total_flow += accept + force_flow
                         } else if (atomicState.heat_accept) {
                             Integer sub_flow = accept * accept_flow / atomicState.heat_accept
                             if (sub_flow) {
                                 zone_status_device.setState("Heating", sub_flow)
+                                total_flow += sub_flow
                             } else {
                                 zone_status_device.setState("Off", 0)
                             }
@@ -1980,14 +2074,17 @@ def update_zones() {
                     demand = zone_status_device.currentValue("cool_demand")
                     if (demand) {
                         zone_status_device.setState("Cooling", demand + force_flow)
+                        total_flow += demand + force_flow
                     } else {
                         accept = zone_status_device.currentValue("cool_accept")
                         if (force_flow) {
                             zone_status_device.setState("Cooling", accept + force_flow)
+                            total_flow += accept + force_flow
                         } else if (atomicState.cool_accept) {
                             Integer sub_flow = accept * accept_flow / atomicState.cool_accept
                             if (sub_flow) {
                                 zone_status_device.setState("Cooling", sub_flow)
+                                total_flow += sub_flow
                             } else {
                                 zone_status_device.setState("Off", 0)
                             }
@@ -2000,9 +2097,11 @@ def update_zones() {
                     demand = zone_status_device.currentValue("fan_demand")
                     if (demand) {
                         zone_status_device.setState("Fan", demand + force_flow)
+                        total_flow += demand + force_flow
                     } else {
                         if (force_flow) {
                             zone_status_device.setState("Fan", force_flow)
+                            total_flow += force_flow
                         } else {
                             zone_status_device.setState("Off", 0)
                         }
@@ -2012,9 +2111,11 @@ def update_zones() {
                     demand = zone_status_device.currentValue("fan_accept")
                     if (demand) {
                         zone_status_device.setState("Vent", demand + force_flow)
+                        total_flow += demand + force_flow
                     } else {
                         if (force_flow) {
                             zone_status_device.setState("Vent", force_flow)
+                            total_flow += force_flow
                         } else {
                             zone_status_device.setState("Off", 0)
                         }
@@ -2025,9 +2126,11 @@ def update_zones() {
                     // log.debug("zone dehum demand is $demand")
                     if (demand) {
                         zone_status_device.setState("Dehum", demand + force_flow)
+                        total_flow += demand + force_flow
                     } else {
                         if (force_flow) {
                             zone_status_device.setState("Dehum", force_flow)
+                            total_flow += force_flow
                         } else {
                             zone_status_device.setState("Off", 0)
                         }
@@ -2038,9 +2141,11 @@ def update_zones() {
                     // log.debug("zone humid demand is $demand")
                     if (demand) {
                         zone_status_device.setState("Humid", demand + force_flow)
+                        total_flow += demand + force_flow
                     } else {
                         if (force_flow) {
                             zone_status_device.setState("Humid", force_flow)
+                            total_flow += force_flow
                         } else {
                             zone_status_device.setState("Off", 0)
                         }
@@ -2050,6 +2155,17 @@ def update_zones() {
                     zone_status_device.setState("Idle", 0)
                     break
             }
+        }
+    }
+    zones.each { z1 ->
+        // log.debug("checking zone $z1.label")
+        if (atomicState.main_zones.findAll { it == z1.label }) {
+            log.debug("updating output for zone $z1.label")
+            zone_status_device = z1.get_status_device()
+            zone_flow = zone_status_device.currentValue("flow") + zone_status_device.currentValue("off_capacity")
+            zone_status_device.set_heat_output(heat_output * zone_flow / total_flow)
+            zone_status_device.set_cool_output(cool_output * zone_flow / total_flow)
+            zone_status_device.set_vent_output(vent_output * zone_flow / total_flow)
         }
     }
 }
@@ -2430,4 +2546,34 @@ Boolean subzone_ok(String parent_zone, String child_zone) {
         }
     }
     return result
+}
+
+Number get_min_heat_flow() {
+    switch ("$equip_type") {
+        case "Furnace only":
+        case "Furnace and Air Conditioning":
+            if (atomicState.off_capacity) {
+                return cfmW1 - atomicState.off_capacity
+            } else {
+                return cfmW1
+            }
+            break
+        default:
+            return 0
+    }
+}
+
+Number get_min_cool_flow() {
+    switch ("$equip_type") {
+        case "Air Conditioning only":
+        case "Furnace and Air Conditioning":
+            if (atomicState.off_capacity) {
+                return cfmY1 - atomicState.off_capacity
+            } else {
+                return cfmY1
+            }
+            break
+        default:
+            return 0
+    }
 }
