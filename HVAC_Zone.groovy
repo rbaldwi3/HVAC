@@ -60,18 +60,28 @@ def pageTwo() {
                 }
             }
         }
+        if (cfm < parent.get_min_cool_flow()) {
+            section () {
+                paragraph "NOTE: The maximum airflow for this zone does not permit serving cooling calls unless other zones also call for cooling or volunteer to accept cooling"
+            }
+        }
+        if (cfm < parent.get_min_heat_flow()) {
+            section () {
+                paragraph "NOTE: The maximum airflow for this zone does not permit serving heating calls unless other zones also call for heating or volunteer to accept heating"
+            }
+        }
         switch ("$select_type") {
             case "Always selected":
                 break
             case "Normally Open Damper":
             case "Normally Closed Damper or Duct Fan":
-                section ("Select Switch") {
+                section () {
                     input "closed_pos", "number", required: true, title: "Percent Open when in Off position", default: 0, range: "0 . . 100"
                     input "select_switch", "capability.switch", required: false, title: "Switch for selection of Zone"
                 }
                 break
             case "Proportional Damper":
-                section ("Select Switch") {
+                section () {
                     input "closed_pos", "number", required: true, title: "Percent Open when in Off position", default: 0, range: "0 . . 100"
                     input "select_dimmer", "capability.switchLevel", required: false, title: "Switch for selection of Zone"
                 }
@@ -144,7 +154,8 @@ def pageTwo() {
             }
         }
         section ("Under what conditions should this zone accept ventilation?") {
-            input (name:"vent_criteria", type: "enum", required: false, options: ["When a switch in on","In certain hub modes","When certain people are present"],
+            input (name:"vent_criteria", type: "enum", required: false, options: ["When a switch in on","In certain hub modes","When certain people are present",
+                                                                                  "When ventilation in last hour is less than a threshold"],
                    submitOnChange: true, multiple: true)
             if (vent_criteria) {
                 if (vent_criteria.findAll { it == "When a switch in on" }) {
@@ -155,6 +166,9 @@ def pageTwo() {
                 }
                 if (vent_criteria.findAll { it == "When certain people are present" }) {
                     input "vent_people", "capability.presenceSensor", required:true, multiple: true, title: "Whose presence?"
+                }
+                if (vent_criteria.findAll { it == "When ventilation in last hour is less than a threshold" }) {
+                    input "vent_threshold", "number", required:true, title: "Maximum ventilation in last hour to accept more"
                 }
                 if (vent_criteria.size() > 1) {
                     input "vent_and", "bool", required: true, title: "Require ALL conditions?", default: false
@@ -217,7 +231,7 @@ def installed() {
     // log.debug("In installed()")
     atomicState.status_DNI = "HVACZone_${app.id}"
     addChildDevice("rbaldwi3", "HVAC Zone Status", atomicState.status_DNI, [isComponent: true, label: app.label])
-    initialize()
+    runIn(5, initialize) // delay so child device has time to finish it's own initialization
 }
 
 def uninstalled() {
@@ -232,7 +246,7 @@ def updated() {
 }
 
 def initialize() {
-    // log.debug("In initialize()")
+    log.debug("In initialize()")
     child_updated() // updates off_capacity
     atomicState.prev_state = "idle"
     atomicState.cool_in_last_hour = false
@@ -243,6 +257,7 @@ def initialize() {
     atomicState.temperature = 75
     atomicState.cool_setpoint = 80
     atomicState.thermostat_mode = "off"
+    atomicState.load_status = "Exception"
     if (full_thermostat()) {
         update_temp()
     	subscribe(stat, "temperature", tempHandler)
@@ -332,6 +347,7 @@ def initialize() {
     update_dehum_demand()
     atomicState.humid_accept = 0
     update_humid_demand()
+    runEvery30Minutes(periodic_check)
     switch ("$output_refresh_interval") {
         case "None":
             break
@@ -365,11 +381,20 @@ def initialize() {
             break
     }
     status_device = getChildDevice(atomicState.status_DNI)
+    status_device.set_heat_demand(atomicState.heat_demand)
+    status_device.set_heat_accept(atomicState.heat_accept)
+    status_device.set_cool_demand(atomicState.cool_demand)
+    status_device.set_cool_accept(atomicState.cool_accept)
+    status_device.set_fan_demand(atomicState.fan_demand)
+    status_device.set_fan_accept(atomicState.fan_accept)
+    status_device.set_dehum_accept(atomicState.dehum_accept)
+    status_device.set_humid_accept(atomicState.humid_accept)
     status_device.set_offline(false)
     status_device.set_temp_increasing(false)
     status_device.set_temp_decreasing(false)
     status_device.set_recent_heat(false)
     status_device.set_recent_cool(false)
+    status_device.set_load_state("Exception")
     subscribe(status_device, "current_state", current_stateHandler)
     subscribe(status_device, "flow", current_stateHandler)
     tmplist = []
@@ -391,12 +416,16 @@ def initialize() {
         }
     }
     atomicState.valid_subzones = tmplist
+    atomicState.vent_in_last_hour = 0
+    atomicState.last_cum_vent = 0
+    atomicState.prev_cum_vent = atomicState.last_cum_vent
     runIn(10, update_parent, [misfire: "ignore"])
 }
 
 def refresh_outputs() {
     // log.debug("In refresh_outputs()")
     status_device = get_status_device()
+    status_device.update_net()
     status_device.set_heat_demand(atomicState.heat_demand)
     status_device.set_heat_accept(atomicState.heat_accept)
     status_device.set_cool_demand(atomicState.cool_demand)
@@ -453,6 +482,32 @@ def refresh_inputs() {
     update_vent_demand()
     update_dehum_demand()
     update_humid_demand()
+}
+
+def periodic_check() {
+    // log.debug("In Zone periodic_check()")
+    status_device = get_status_device()
+    status_device.refresh()
+    current_cum_vent = status_device.currentState("cum_vent").getNumberValue()
+    if (atomicState.last_cum_vent > current_cum_vent) {
+        // no readings since most recent reset
+        atomicState.vent_in_last_hour = current_cum_vent + atomicState.last_cum_vent - atomicState.prev_cum_vent
+        atomicState.last_cum_vent = current_cum_vent
+        atomicState.prev_cum_vent = 2500
+    } else if (atomicState.prev_cum_vent > current_cum_vent) {
+        // one readings since most recent reset
+        atomicState.vent_in_last_hour = current_cum_vent
+        atomicState.prev_cum_vent = atomicState.last_cum_vent
+        atomicState.last_cum_vent = current_cum_vent
+    } else {
+        // normal
+        atomicState.vent_in_last_hour = current_cum_vent - atomicState.prev_cum_vent
+        atomicState.prev_cum_vent = atomicState.last_cum_vent
+        atomicState.last_cum_vent = current_cum_vent
+    }
+    // log.debug("vent_in_last_hour = $atomicState.vent_in_last_hour, prev = $atomicState.prev_cum_vent, last = $atomicState.last_cum_vent")
+    update_vent_demand()
+    status_device.set_vent_in_last_hour(atomicState.vent_in_last_hour)
 }
 
 def child_updated() {
@@ -777,6 +832,11 @@ def update_vent_demand() {
                         if (some_here) { num_satisfied++ }
                     }
                     break
+                case "When ventilation in last hour is less than a threshold":
+                    if (vent_threshold) {
+                        if (atomicState.vent_in_last_hour <= vent_threshold) { num_satisfied++ }
+                    }
+                    break
                 default:
                     log.debug("Unknown vent_criteria $crit")
             }
@@ -975,6 +1035,16 @@ def no_heat_for_an_hour() {
 
 def no_change_for_three_hours() {
     // log.debug("In no_change_for_three_hours()")
+    /* 
+    // This section was to not set thermostat as offline is last activity was within three hours.
+    // However, I had a thermostat go offline and continue to report battery and update last activity, so I am abandoning this for now.
+    String last_activ_str = stat.getLastActivity()
+    Date last_activ_date = Date.parse("yyy-MM-dd HH:mm:ssZ","${last_activ_str}")
+    Date now_date = new Date()
+    long now_long = now_date.getTime()
+    long last_activ_long = last_activ_date.getTime()
+    long diff = now_long - last_activ_long // diff is time since last activity in milliseconds
+    */
     atomicState.change_for_three_hours = false
     update_demand()
     status_device = get_status_device()
@@ -986,6 +1056,7 @@ def update_state() {
     // log.debug("In update_state()")
     def new_state = stat.currentValue("thermostatOperatingState")
     status_device = get_status_device()
+    net_heat = status_device.currentValue("net_heat")
     switch ("$atomicState.prev_state") {
         case "heating":
             atomicState.heat_in_last_hour = true;
@@ -997,9 +1068,15 @@ def update_state() {
                     atomicState.cool_in_last_hour = true;
                     status_device.set_recent_cool(true)
                     unschedule("no_cool_for_an_hour")
-                default:
                     runIn(3600, "no_heat_for_an_hour", [misfire: "ignore"])
+                    atomicState.load_status = "Exception"
+                    status_device.set_load_state("Exception")
                     break
+                default:
+                    log.debug "changing from heating to $new_state, net_heat is $net_heat"
+                    runIn(3600, "no_heat_for_an_hour", [misfire: "ignore"])
+                    atomicState.load_status = "Idle"
+                    status_device.set_load_state("Idle")   
             }
             break
         case "cooling":
@@ -1012,9 +1089,15 @@ def update_state() {
                     atomicState.heat_in_last_hour = true;
                     status_device.set_recent_heat(true)
                     unschedule("no_heat_for_an_hour")
-                default:
                     runIn(3600, "no_cool_for_an_hour", [misfire: "ignore"])
+                    atomicState.load_status = "Exception"
+                    status_device.set_load_state("Exception")
                     break
+                default:
+                    log.debug "changing from cooling to $new_state"
+                    runIn(3600, "no_cool_for_an_hour", [misfire: "ignore"])
+                    atomicState.load_status = "Idle"
+                    status_device.set_load_statue("Idle")   
             }
             break
         default:
@@ -1023,11 +1106,20 @@ def update_state() {
                     atomicState.cool_in_last_hour = true;
                     status_device.set_recent_cool(true)
                     unschedule("no_cool_for_an_hour")
+                    if (atomicState.load_status == "Idle") {
+                        atomicState.load_status = "Cooling"
+                        status_device.set_load_state("Cooling")   
+                    }
                     break
                 case "heating":
+                    log.debug "changing from $atomicState.prev_state to $new_state, net_heat is $net_heat"
                     atomicState.heat_in_last_hour = true;
                     status_device.set_recent_heat(true)
                     unschedule("no_heat_for_an_hour")
+                    if (atomicState.load_status == "Idle") {
+                        atomicState.load_status = "Heating"
+                        status_device.set_load_state("Heating")   
+                    }
                     break
             }
     }
@@ -1039,8 +1131,10 @@ def op_stateHandler(evt=NULL) {
     atomicState.change_for_three_hours = true
     status_device = get_status_device()
     status_device.set_offline(false)
+    status_device.update_net()
     runIn(3600*3, "no_change_for_three_hours", [misfire: "ignore"])
     update_state()
+    status_device.reset_net()
     runIn(5, "update_demand", [misfire: "ignore"]) // this does the work of calculating what should be demanded of the zone control app
     // delaying ensures rapid changes only create one call and also ensures that wired_tstatHandler() gets called before zone_call_changed() in parent.
 }
@@ -1133,6 +1227,9 @@ def tempHandler(evt=NULL) {
 Boolean update_heat_setpoint() {
     // log.debug("In update_heat_setpoint()")
     if (stat.hasAttribute("heatingSetpoint")) {
+        atomicState.load_status = "Exception"
+        status_device = get_status_device()
+        status_device.set_load_state("Exception")
         def levelstate = stat.currentState("heatingSetpoint")
         new_setpoint = levelstate.value as BigDecimal
         changed = false;
@@ -1172,6 +1269,9 @@ def heat_setHandler(evt=NULL) {
 Boolean update_cool_setpoint() {
     // log.debug("In update_cool_setpoint()")
     if (stat.hasAttribute("coolingSetpoint")) {
+        atomicState.load_status = "Exception"
+        status_device = get_status_device()
+        status_device.set_load_state("Exception")
         def levelstate = stat.currentState("coolingSetpoint")
         new_setpoint = levelstate.value as BigDecimal
         changed = false;
@@ -1211,6 +1311,9 @@ def cool_setHandler(evt=NULL) {
 Boolean update_thermostat_mode() {
     // log.debug("In update_thermostat_mode()")
     if (stat.hasAttribute("thermostatMode")) {
+        // atomicState.load_status = "Exception"
+        // status_device = get_status_device()
+        // status_device.set_load_state("Exception")
         def levelstate = stat.currentState("thermostatMode")
         if (atomicState.thermostat_mode != levelstate.stringValue) {
             atomicState.thermostat_mode = levelstate.stringValue
@@ -1403,6 +1506,10 @@ def update_zone_state() {
     status_device = getChildDevice(atomicState.status_DNI)
     // log.debug("child_demand = $child_demand, child_accept = $child_accept, child_force = $child_force, atomicState.child_heat_accept = $atomicState.child_heat_accept")
     if (subzones) {
+        def total_flow = atomicState.off_capacity + atomicState.on_capacity
+        heat_output = status_device.currentState("heat_output").getNumberValue()
+        cool_output = status_device.currentState("cool_output").getNumberValue()
+        vent_output = status_device.currentState("vent_output").getNumberValue()
         subzones.each { sz ->
             if (atomicState.valid_subzones.findAll { it == sz.label }) {
                 switch ("$atomicState.current_mode") {
@@ -1410,14 +1517,17 @@ def update_zone_state() {
                         demand = sz.currentValue("heat_demand")
                         if (demand) {
                             sz.setState("Heating", demand + child_force)
+                            total_flow += demand + child_force
                         } else {
                             accept = sz.currentValue("heat_accept")
                             if (child_force) {
                                 sz.setState("Heating", accept + child_force)
+                                total_flow += accept + child_force
                             } else {
                                 if (atomicState.child_heat_accept) {
                                     Integer sub_flow = accept * child_accept / atomicState.child_heat_accept
                                     sz.setState("Heating", sub_flow)
+                                    total_flow += sub_flow
                                 } else {
                                     sz.setState("Off", 0)
                                 }
@@ -1428,14 +1538,17 @@ def update_zone_state() {
                         demand = sz.currentValue("cool_demand")
                         if (demand) {
                             sz.setState("Cooling", demand + child_force)
+                            total_flow += demand + child_force
                         } else {
                             accept = sz.currentValue("cool_accept")
                             if (child_force) {
                                 sz.setState("Cooling", accept + child_force)
+                                total_flow += accept + child_force
                             } else {
                                 if (atomicState.child_cool_accept) {
                                     Integer sub_flow = accept * child_accept / atomicState.child_cool_accept
                                     sz.setState("Cooling", sub_flow)
+                                    total_flow += sub_flow
                                 } else {
                                     sz.setState("Off", 0)
                                 }
@@ -1446,9 +1559,11 @@ def update_zone_state() {
                         demand = sz.currentValue("fan_demand")
                         if (demand) {
                             sz.setState("Fan", demand + child_force)
+                            total_flow += demand + child_force
                         } else {
                             if (child_force) {
                                 sz.setState("Fan", child_force)
+                                total_flow += child_force
                             } else {
                                 sz.setState("Off", 0)
                             }
@@ -1458,9 +1573,11 @@ def update_zone_state() {
                         demand = sz.currentValue("fan_accept")
                         if (demand) {
                             sz.setState("Vent", demand + child_force)
+                            total_flow += demand + child_force
                         } else {
                             if (child_force) {
                                 sz.setState("Vent", child_force)
+                                total_flow += child_force
                             } else {
                                 sz.setState("Off", 0)
                             }
@@ -1470,9 +1587,11 @@ def update_zone_state() {
                         demand = sz.currentValue("dehum_accept")
                         if (demand) {
                             sz.setState("Dehum", demand + child_force)
+                            total_flow += demand + child_force
                         } else {
                             if (child_force) {
                                 sz.setState("Dehum", child_force)
+                                total_flow += child_force
                             } else {
                                 sz.setState("Off", 0)
                             }
@@ -1482,9 +1601,11 @@ def update_zone_state() {
                         demand = sz.currentValue("humid_accept")
                         if (demand) {
                             sz.setState("Humid", demand + child_force)
+                            total_flow += demand + child_force
                         } else {
                             if (child_force) {
                                 sz.setState("Humid", child_force)
+                                total_flow += child_force
                             } else {
                                 sz.setState("Off", 0)
                             }
@@ -1497,6 +1618,15 @@ def update_zone_state() {
                         sz.setState("Off", 0)
                         break
                 }
+            }
+        }
+        subzones.each { sz1 ->
+            if (atomicState.valid_subzones.findAll { it == sz1.label }) {
+                zone_flow = sz1.currentValue("flow") + sz1.currentValue("off_capacity")
+                log.debug("heat_output = $heat_output, zone_flow = $zone_flow, total_flow = $total_flow")
+                sz1.set_heat_output(heat_output * zone_flow / total_flow)
+                sz1.set_cool_output(cool_output * zone_flow / total_flow)
+                sz1.set_vent_output(vent_output * zone_flow / total_flow)
             }
         }
     }
