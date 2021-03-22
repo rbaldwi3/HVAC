@@ -31,15 +31,22 @@ metadata {
     command "set_temperature", ["number"]
     attribute "HDM", "number"
     attribute "CDM", "number"
+    attribute "heating_degrees", "number"
+    attribute "cooling_degrees", "number"
     attribute "prev_HDD", "number"
     attribute "prev_CDD", "number"
     attribute "illuminance", "number"
+    attribute "adj_illuminance", "number"
     command "set_illuminance", ["number"]
+    command "set_cloud", ["number"]
     attribute "IM", "number"
+    attribute "AIM", "number"
     attribute "prev_ID", "number"
+    attribute "prev_AID", "number"
     attribute "dewpoint", "number"
     command "set_dewpoint", ["number"]
     attribute "DPM", "number"
+    attribute "dewpoint_degrees", "number"
     attribute "prev_DPD", "number"
     attribute "wind", "number"
     command "set_wind", ["number"]
@@ -55,11 +62,13 @@ def installed() {
     state.temperature_time = 0
     state.dewpoint_time = 0
     state.uvi_time = 0
+    state.AIM = 0
     state.IM = 0
     state.DPM = 0
     state.HDM = 0
     state.CDM = 0
-    state.UVIM = 0
+    state.WM = 0
+    state.cloud = 0
     state.reset_hours = 23
     state.reset_minutes = 30
     schedule("0 30 23 * * ?","reset")
@@ -91,10 +100,12 @@ def initialize() {
 }
 
 def refresh() {
+	log.debug("In refresh()")
     if (state.temperature_time) { update_temperature(state.temperature) }
-    if (state.illuminance_time) { update_illuminance(state.illuminance) }
+    if (state.illuminance_time && (state.cloud != null)) { update_illuminance(state.illuminance, state.cloud) }
     if (state.dewpoint_time) { update_dewpoint(state.dewpoint) }
     if (state.wind_time) { update_wind(state.wind) }
+	log.debug("finished refresh()")
 }
 
 def reset() {
@@ -105,6 +116,11 @@ def reset() {
         sendEvent(name:"prev_ID", value:(prev / 100))
         state.IM = 0
         sendEvent(name:"IM", value:0)
+        // Adjusted illuminance
+        prev = state.AIM * 10 / 6 / 24
+        sendEvent(name:"prev_AID", value:(prev / 100))
+        state.AIM = 0
+        sendEvent(name:"AIM", value:0)
     }
     // ultraviolet index
     if (state.wind_time) {
@@ -145,11 +161,18 @@ def update_temperature(Number new_value) {
         state.CDM += (avg - state.cool_base) * duration / 60 / 1000
         Integer rounded = state.CDM + 0.5
         sendEvent(name:"CDM", value:rounded)
+        Number degrees = new_value - state.cool_base
+        sendEvent(name:"cooling_degrees", value:degrees)
+        sendEvent(name:"heating_degrees", value:0.0)
     }
     if (avg < state.heat_base) {
         state.HDM += (state.heat_base - avg) * duration / 60 / 1000
         Integer rounded = state.HDM + 0.5
         sendEvent(name:"HDM", value:rounded)
+        log.debug("HDM updated to $rounded")
+        Number degrees = state.heat_base - new_value
+        sendEvent(name:"heating_degrees", value:degrees)
+        sendEvent(name:"cooling_degrees", value:0.0)
     }
     state.temperature = new_value
     sendEvent(name:"temperature", value:new_value)
@@ -166,22 +189,40 @@ def set_temperature(Number new_value) {
     }
 }
 
-def update_illuminance(Number new_value) {
-	log.debug("In update_illuminance($new_value)")
-    avg = (state.illuminance + new_value) / 2
+def update_illuminance(Number new_illuminance, Number new_cloud) {
+	log.debug("In update_illuminance($new_illuminance, $new_cloud)")
     duration = now() - state.illuminance_time
     state.illuminance_time = now()
+    avg = (state.illuminance + new_illuminance) / 2
     state.IM += avg * duration / 60 / 1000
     Integer rounded = state.IM + 0.5
     sendEvent(name:"IM", value:rounded)
-    state.illuminance = new_value
-    sendEvent(name:"illuminance", value:new_value)
+    log.debug("IM updated to $rounded")
+    avg = (state.illuminance * (100 - state.cloud) + new_illuminance * (100 - new_cloud)) / 200
+    state.AIM += avg * duration / 60 / 1000
+    rounded = state.AIM + 0.5
+    sendEvent(name:"AIM", value:rounded)
+    log.debug("AIM updated to $rounded")
+    state.illuminance = new_illuminance
+    sendEvent(name:"illuminance", value:new_illuminance)
+    state.cloud = new_cloud
+    rounded = new_illuminance * (100 - new_cloud) / 100 + 0.5
+    sendEvent(name:"adj_illuminance", value:rounded)
+}
+
+def set_cloud(Number new_value) {
+	log.debug("In set_cloud($new_value)")
+    if (state.illuminance_time && state.cloud) {
+        update_illuminance(state.illuminance, new_value)
+    } else {
+        state.cloud = new_value
+    }
 }
 
 def set_illuminance(Number new_value) {
 	log.debug("In set_illuminance($new_value)")
-    if (state.illuminance_time) {
-        update_illuminance(new_value)
+    if (state.illuminance_time && state.cloud) {
+        update_illuminance(new_value, state.cloud)
     } else {
         state.illuminance_time = now()
         state.illuminance = new_value
@@ -197,6 +238,9 @@ def update_dewpoint(Number new_value) {
     state.DPM += (avg - state.dp_base) * duration / 60 / 1000
     Integer rounded = state.DPM + 0.5
     sendEvent(name:"DPM", value:rounded)
+    log.debug("DPM updated to $rounded")
+    Number degrees = new_value - state.dp_base
+    sendEvent(name:"dewpoint_degrees", value:degrees)
     state.dewpoint = new_value
     sendEvent(name:"dewpoint", value:new_value)
 }
@@ -220,6 +264,7 @@ def update_wind(Number new_value) {
     state.WM += avg * duration / 60 / 1000
     Integer rounded = state.WM + 0.5
     sendEvent(name:"WM", value:rounded)
+    log.debug("WM updated to $rounded")
     state.wind = new_value
     sendEvent(name:"wind", value:new_value)
 }
