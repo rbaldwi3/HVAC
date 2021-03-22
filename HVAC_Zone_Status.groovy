@@ -69,27 +69,53 @@ metadata {
     command "set_temp_decreasing", ["boolean"]
     attribute "offline", "string"
     command "set_offline", ["boolean"]
+    attribute "heat_output", "number" // (kbtu / hr)
+    command "set_heat_output", ["number"]
+    attribute "cool_output", "number" // (kbtu / hr)
+    command "set_cool_output", ["number"]
+    attribute "vent_output", "number" // (percent)
+    command "set_vent_output", ["number"]
+    attribute "vent_in_last_hour", "number" // (percent)
+    command "set_vent_in_last_hour", ["number"]
+    attribute "cum_cooling", "number" // cooling since last reset (btu)
+    attribute "cum_heating", "number" // heating since last reset (btu)
+    attribute "cum_vent", "number" // ventilation since last reset (percent hr)
+    attribute "prev_cooling", "number" // previous period cooling (kbtu)
+    attribute "prev_heating", "number" // previous period heating (kbtu)
+    attribute "prev_vent", "number" // previous period ventilation (percent hr)
+    attribute "prev_date", "date" // date and time of last reset
+    command "set_reset_time", ["integer", "integer"] // time to reset each day, arguments are hours and minutes
+    attribute "est_heat_load", "number" // (kbtu / hr)
+    command "set_est_heat_load", ["number"]
+    attribute "est_cool_load", "number" // (kbtu / hr)
+    command "set_est_cool_load", ["number"]
+    attribute "net_cool", "number" // (kbtu)
+    attribute "net_heat", "number" // (kbtu)
+    command "reset_net"
+    attribute "load_state", "string" // one of "Heating", "Cooling", "Idle", or "Exception"
+    command "set_load_state", ["string"]
 }
 
 def installed() {
-    // log.debug("In installed()")
+    log.debug("In installed()")
     state.tz_offset = location.timeZone.rawOffset/1000/60/60
+    state.reset_hours = 23
+    state.reset_minutes = 30
+    schedule("0 30 23 * * ?","reset_runtime")
+    schedule("0 0 0 * * ?", set_tz_offset)
     initialize()
 }
 
 def updated() {
     // log.debug("In updated()")
     unsubscribe()
-    unschedule()
+    // unschedule()
     initialize()
 }
 
 def initialize() {
-    // log.debug("In initialize()")
-    reset_runtime()
+    log.debug("In initialize()")
     state.last_change = now()
-    state.current_state = "Idle"
-    setState("Idle", 0)
     state.heat_demand = 0
     state.cool_demand = 0
     state.fan_demand = 0
@@ -109,7 +135,15 @@ def initialize() {
     state.off_capacity = 0
     set_off_capacity(0)
     debug("initialized")
-    schedule("0 0 0 * * ?", set_tz_offset)
+    state.cool_time = 0 
+    state.heat_time = 0
+    state.vent_time = 0 
+    state.cum_cooling = 0 
+    state.cum_heating = 0 
+    state.cum_vent = 0 
+    state.current_state = "Idle"
+    reset_runtime()
+    setState("Idle", 0)
 }
 
 def set_tz_offset() {
@@ -123,15 +157,20 @@ def set_tz_offset() {
 }
 
 def refresh() {
-    // log.debug("In refresh()")
+    log.debug("In refresh()")
     add_interval()
+    if (state.cool_time) { update_cooling(state.cool_output) }
+    if (state.heat_time) { update_heating(state.heat_output) }
+    if (state.vent_time) { update_vent(state.vent_output) }
+    update_net()
+    log.debug("finished refresh()")
 }
 
 def reset_runtime() {
-    // log.debug("In reset_runtime()")
+    log.debug("In reset_runtime()")
     state.cooling_time = 0
     state.heating_time = 0
-    state.vent_time = 0
+    state.venting_time = 0
     state.fan_time = 0
     state.idle_time = 0
     state.dehum_time = 0
@@ -144,10 +183,25 @@ def reset_runtime() {
     sendEvent(name:"dehum_time", value:state.dehum_time)
     sendEvent(name:"humid_time", value:state.dehum_time)
     state.last_change = now()
+    refresh()
+    Integer prev = state.cum_cooling / 10 + 0.5
+    sendEvent(name:"prev_cooling", value:(prev / 100))
+    state.cum_cooling = 0
+    sendEvent(name:"cum_cooling", value:0)
+    prev = state.cum_heating / 10 + 0.5
+    sendEvent(name:"prev_heating", value:(prev / 100))
+    state.cum_heating = 0
+    sendEvent(name:"cum_heating", value:0)
+    prev = state.cum_vent * 100 + 0.5
+    sendEvent(name:"prev_vent", value:(prev / 100))
+    state.cum_vent = 0
+    sendEvent(name:"cum_vent", value:0)
+    Date reset_date = timeToday("$state.reset_hours:$state.reset_minutes", location.timezone)
+    sendEvent(name:"prev_date", value:reset_date)
 }
 
 def add_interval() {
-    // log.debug("In add_interval()")
+    log.debug("In add_interval()")
     Long interval = (now() - state.last_change) / 1000
     state.last_change = now()
     switch ("$state.current_state") {
@@ -164,8 +218,8 @@ def add_interval() {
             sendEvent(name:"fan_time", value:state.fan_time)
             break;
         case "Vent":
-            state.vent_time += interval
-            sendEvent(name:"vent_time", value:state.vent_time)
+            state.venting_time += interval
+            sendEvent(name:"vent_time", value:state.venting_time)
             break;
         case "Dehum":
             state.dehum_time += interval
@@ -195,8 +249,8 @@ def add_interval() {
     if (state.fan_time) {
         result += "fan=" + duration_string(state.fan_time) + " "
     }
-    if (state.vent_time) {
-        result += "vent=" + duration_string(state.vent_time) + " "
+    if (state.venting_time) {
+        result += "vent=" + duration_string(state.venting_time) + " "
     }
     if (state.dehum_time) {
         result += "dehum=" + duration_string(state.dehum_time) + " "
@@ -250,7 +304,7 @@ String duration_string(Long seconds) {
 }
 
 def setState(String new_state, new_flow) {
-	// log.debug("In setState($new_state, $new_flow)")
+	log.debug("In setState($new_state, $new_flow)")
     add_interval()
     state.current_state = new_state
     sendEvent(name:"current_state", value:"$new_state")
@@ -367,4 +421,144 @@ def set_offline(new_value) {
     } else {
         sendEvent(name:"offline", value:"false")
     }
+}
+
+def update_heating(Number new_value) {
+	log.debug("In update_heating($new_value)")
+    duration = now() - state.heat_time
+    state.heat_time = now()
+    state.cum_heating += state.heat_output * duration / 60 / 60
+    Integer rounded = state.cum_heating + 0.5
+    sendEvent(name:"cum_heating", value:rounded)
+    if (state.heat_output != new_value) {
+        update_net()
+        state.heat_output = new_value
+        rounded = new_value * 100 + 0.5
+        sendEvent(name:"heat_output", value:(rounded / 100))
+    }
+}
+
+def set_heat_output(new_value) {
+	log.debug("In set_heat_output($new_value)")
+    if (state.heat_time) {
+        update_heating(new_value)
+    } else {
+        state.heat_time = now()
+        state.heat_output = new_value
+        Integer rounded = new_value * 100 + 0.5
+        sendEvent(name:"heat_output", value:(rounded / 100))
+    }
+}
+
+def update_cooling(Number new_value) {
+	log.debug("In update_cooling($new_value)")
+    duration = now() - state.cool_time
+    state.cool_time = now()
+    state.cum_cooling += state.cool_output * duration / 60 / 60
+    Integer rounded = state.cum_cooling + 0.5
+    sendEvent(name:"cum_cooling", value:rounded)
+    if (state.cool_output != new_value) {
+        update_net()
+        state.cool_output = new_value
+        rounded = new_value * 100 + 0.5
+        sendEvent(name:"cool_output", value:(rounded / 100))
+    }
+}
+
+def set_cool_output(new_value) {
+	log.debug("In set_cool_output($new_value)")
+    if (state.cool_time) {
+        update_cooling(new_value)
+    } else {
+        state.cool_time = now()
+        state.cool_output = new_value
+        Integer rounded = new_value * 100 + 0.5
+        sendEvent(name:"cool_output", value:(rounded / 100))
+    }
+}
+
+def update_vent(Number new_value) {
+	log.debug("In update_vent($new_value)")
+    duration = now() - state.vent_time
+    state.vent_time = now()
+    state.cum_vent += state.vent_output * duration / 1000 / 60 / 60
+    Integer rounded = state.cum_vent + 0.5
+    sendEvent(name:"cum_vent", value:rounded)
+    state.vent_output = new_value
+    rounded = new_value * 100 + 0.5
+    sendEvent(name:"vent_output", value:(rounded / 100))
+}
+
+def set_vent_output(new_value) {
+	log.debug("In set_vent_output($new_value)")
+    if (state.vent_time) {
+        update_vent(new_value)
+    } else {
+        state.vent_time = now()
+        state.vent_output = new_value
+        Integer rounded = new_value * 100 + 0.5
+        sendEvent(name:"vent_output", value:(rounded / 100))
+    }
+}
+
+def set_vent_in_last_hour(new_value) {
+	log.debug("In set_vent_in_last_hour($new_value)")
+    sendEvent(name:"vent_in_last_hour", value:new_value)
+}
+
+def set_reset_time(Integer hours, Integer minutes) {
+	log.debug("In set_reset_time($hours:$minutes)")
+    if (hours < 0) { return }
+    if (hours > 23) { return }
+    if (minutes < 0) { return }
+    if (minutes > 59) { return }
+    unschedule()
+    schedule("0 $minutes $hours * * ?","reset_runtime")
+    state.reset_hours = hours
+    state.reset_minutes = minutes
+}
+
+def set_est_heat_load(new_value) {
+	log.debug("In set_est_heat_load($new_value)")
+    update_net()
+    state.est_heat_load = new_value
+    sendEvent(name:"est_heat_load", value:new_value)
+}
+
+def set_est_cool_load(new_value) {
+	log.debug("In set_est_cool_load($new_value)")
+    update_net()
+    state.est_cool_load = new_value
+    sendEvent(name:"est_cool_load", value:new_value)
+}
+
+def update_net() {
+    if (state.load_time) {
+        Number duration = (now() - state.load_time) / 1000 / 60 // minutes
+        log.debug "duration = $duration"
+        if ((state.est_cool_load != null) && (state.cool_output != null)) {
+            state.net_cool += (state.cool_output - state.est_cool_load) * duration
+            Integer rounded = 100 * state.net_cool / 60 + 0.5
+            sendEvent(name:"net_cool", value:rounded / 100)
+        }
+        if ((state.est_heat_load != null) && (state.heat_output != null)) {
+            state.net_heat += (state.heat_output - state.est_heat_load) * duration
+            Integer rounded = 100 * state.net_heat / 60 + 0.5
+            sendEvent(name:"net_heat", value:rounded / 100)
+        }
+        state.load_time = now()
+    }
+}
+
+def reset_net() {
+    state.load_time = now()
+    state.net_cool = 0.0
+    sendEvent(name:"net_cool", value:0.0)
+    state.net_heat = 0.0
+    sendEvent(name:"net_heat", value:0.0)
+}
+
+def set_load_state(String new_state) {
+    state.load_state = new_state
+    sendEvent(name:"load_state", value:new_state)
 }
