@@ -89,9 +89,9 @@ metadata {
     command "set_est_heat_load", ["number"]
     attribute "est_cool_load", "number" // (kbtu / hr)
     command "set_est_cool_load", ["number"]
-    attribute "net_cool", "number" // (kbtu)
-    attribute "net_heat", "number" // (kbtu)
-    command "reset_net"
+    // attribute "net_cool", "number" // (kbtu)
+    // attribute "net_heat", "number" // (kbtu)
+    // command "reset_net"
     attribute "load_state", "string" // one of "Heating", "Cooling", "Idle", or "Exception"
     command "set_load_state", ["string"]
 }
@@ -162,7 +162,7 @@ def refresh() {
     if (state.cool_time) { update_cooling(state.cool_output) }
     if (state.heat_time) { update_heating(state.heat_output) }
     if (state.vent_time) { update_vent(state.vent_output) }
-    update_net()
+    // update_net()
     log.debug("finished refresh()")
 }
 
@@ -431,7 +431,7 @@ def update_heating(Number new_value) {
     Integer rounded = state.cum_heating + 0.5
     sendEvent(name:"cum_heating", value:rounded)
     if (state.heat_output != new_value) {
-        update_net()
+        // update_net()
         state.heat_output = new_value
         rounded = new_value * 100 + 0.5
         sendEvent(name:"heat_output", value:(rounded / 100))
@@ -458,7 +458,7 @@ def update_cooling(Number new_value) {
     Integer rounded = state.cum_cooling + 0.5
     sendEvent(name:"cum_cooling", value:rounded)
     if (state.cool_output != new_value) {
-        update_net()
+        // update_net()
         state.cool_output = new_value
         rounded = new_value * 100 + 0.5
         sendEvent(name:"cool_output", value:(rounded / 100))
@@ -520,18 +520,19 @@ def set_reset_time(Integer hours, Integer minutes) {
 
 def set_est_heat_load(new_value) {
 	log.debug("In set_est_heat_load($new_value)")
-    update_net()
+    // update_net()
     state.est_heat_load = new_value
     sendEvent(name:"est_heat_load", value:new_value)
 }
 
 def set_est_cool_load(new_value) {
 	log.debug("In set_est_cool_load($new_value)")
-    update_net()
+    // update_net()
     state.est_cool_load = new_value
     sendEvent(name:"est_cool_load", value:new_value)
 }
 
+/*
 def update_net() {
     if (state.load_time) {
         Number duration = (now() - state.load_time) / 1000 / 60 // minutes
@@ -557,6 +558,7 @@ def reset_net() {
     state.net_heat = 0.0
     sendEvent(name:"net_heat", value:0.0)
 }
+*/
 
 def set_load_state(String new_state) {
     state.load_state = new_state
