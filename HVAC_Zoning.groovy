@@ -20,7 +20,8 @@
  * version 0.3 - restructured so apps communicate via HVAC Zone Status virtual devices
  *            - Added humdifier and dehumidifier controls
  *            - Misc. robustness improvements
- * version 1.0 - 
+ * version 1.0 - Added load tracking features
+ *            - Added support for heat pumps
  */
 
 definition(
@@ -35,54 +36,94 @@ definition(
 )
 
 preferences {
-    page(name: "pageOne", nextPage: "pageTwo", uninstall: true) {
+    page(name: "pageOne", title: "Equipment Types", nextPage: "pageTwo", uninstall: true)
+    page(name: "pageTwo", title: "Equipment Data", nextPage: "pageThree", uninstall: true)
+    page(name: "pageThree", title: "Control Rules", nextPage: "pageFour", uninstall: true)
+    page(name: "pageFour", title: "Zones", install: true, uninstall: true)
+}
+
+def pageOne() {
+    dynamicPage(name: "pageOne") {
         section ("Label") {
             label required: true, multiple: false
         }
         section ("Equipment Types") {
             input(name: "equip_type", type: "enum", required: true, multiple: false, title: "Heating and Cooling Equipment", submitOnChange: true,
-                  options: ["Furnace only","Air Conditioning only","Furnace and Air Conditioning"])
-                      // "Heat Pump only","Heat Pump with Emergency Heat","Heat Pump with Furnace"])
+                  options: ["Furnace only","Air Conditioning only","Furnace and Air Conditioning",
+                      "Heat Pump only","Heat Pump with Electric Backup","Heat Pump with Backup Furnace"])
             if (equip_type) {
-                if (equip_type == "Furnace only" ) {
-                    input(name: "heat_type", type: "enum", required: true, title: "Heating Equipment Type", options: ["Single stage","Two stage"])
-                }
-                if (equip_type == "Air Conditioning only" ) {
-                    input(name: "cool_type", type: "enum", required: true, title: "Cooling Equipment Type", options: ["Single stage","Two stage"])
-                    input "cool_dehum_mode", "bool", required: true, title: "Cooling equipment has dehumidify mode", default: false
-                }
-                if (equip_type == "Furnace and Air Conditioning" ) {
-                    input(name: "heat_type", type: "enum", required: true, title: "Heating Equipment Type", options: ["Single stage","Two stage"])
-                    input(name: "cool_type", type: "enum", required: true, title: "Cooling Equipment Type", options: ["Single stage","Two stage"])
-                    input "cool_dehum_mode", "bool", required: true, title: "Cooling equipment has dehumidify mode", default: false
+                switch (equip_type) {
+                    case "Furnace only":
+                        input(name: "heat_type", type: "enum", required: true, title: "Furnace Type", options: ["Single stage","Two stage"])
+                        break
+                    case "Furnace and Air Conditioning":
+                        input(name: "heat_type", type: "enum", required: true, title: "Furnace Type", options: ["Single stage","Two stage"])
+                    case "Air Conditioning only":
+                        input(name: "cool_type", type: "enum", required: true, title: "Air Conditioner Type", options: ["Single stage","Two stage"])
+                        input "cool_dehum_mode", "bool", required: true, title: "Air Conditioner has dehumidify mode", default: false
+                        break
+                    case "Heat Pump with Backup Furnace":
+                        input(name: "heat_type", type: "enum", required: true, title: "Furnace Type", options: ["Single stage","Two stage"])
+                    case "Heat Pump only":
+                    case "Heat Pump with Electric Backup":
+                        input(name: "cool_type", type: "enum", required: true, title: "Heat Pump Type", options: ["Single stage","Two stage"])
+                        input "cool_dehum_mode", "bool", required: true, title: "Heat pump has dehumidify mode", default: false
+                        input "rv_heat", "bool", required: true, title: "Reversing valve type, True = on for heat (typically labeled B), False = on for cooling (typically labeled O)", default: false
+                        break
                 }
             }
             input(name: "vent_type", type: "enum", required: true, title: "Ventilation Equipment Type",
                   options: ["None", "Requires Blower", "Doesn't Require Blower"])
-            input(name: "humidifer_type", type: "enum", required: true, title: "Humidifier Type",
-                  options: ["None", "Separate from HVAC ductwork", "Requires Heat", "Requires Fan"])
+            if (equip_type) {
+                switch (equip_type) {
+                    case "Air Conditioning only":
+                        input(name: "humidifer_type", type: "enum", required: true, title: "Humidifier Type",
+                              options: ["None", "Separate from HVAC ductwork", "Requires Fan"])
+                        break
+                    case "Furnace only":
+                    case "Furnace and Air Conditioning":
+                    case "Heat Pump with Backup Furnace":
+                    case "Heat Pump only":
+                    case "Heat Pump with Electric Backup":
+                        input(name: "humidifer_type", type: "enum", required: true, title: "Humidifier Type",
+                              options: ["None", "Separate from HVAC ductwork", "Requires Heat", "Requires Fan"])
+                        break
+                }
+            }
             input(name: "dehumidifer_type", type: "enum", required: true, title: "Dehumidifier Type",
                   options: ["None", "Separate from HVAC ductwork", "Outputs to Supply Plenum", "Outputs to Return Plenum"])
         }
     }
-    page(name: "pageTwo", title: "Equipment Data", nextPage: "pageThree", uninstall: true)
-    page(name: "pageThree", title: "Control Rules", nextPage: "pageFour", uninstall: true)
-    page(name: "pageFour", title: "Zones", install: true, uninstall: true)
 }
 
 def pageTwo() {
     dynamicPage(name: "pageTwo") {
         section ("Equipment Output") {
             switch ("$equip_type") {
-                case "Furnace only":
-                case "Furnace and Air Conditioning":
-                    switch ("$heat_type") {
+                case "Heat Pump only":
+                case "Heat Pump with Electric Backup":
+                case "Heat Pump with Backup Furnace":
+                    switch ("$cool_type") {
                         case "Single stage":
-                            input "capW1", "number", required: false, title: "Heating output (kbtu/hr)", range: "12 . . 120", submitOnChange: true
+                            input "capY1", "number", required: false, title: "Heat pump output (kbtu/hr)", submitOnChange: true
                             break
                         case "Two stage":
-                            input "capW1", "number", required: false, title: "Stage 1 heating output (kbtu/hr)", range: "12 . . 120", submitOnChange: true
-                            input "capW2", "number", required: false, title: "Stage 2 heating output (kbtu/hr)", range: "12 . . 120", submitOnChange: true
+                            input "capY1", "number", required: false, title: "Heat pump stage 1 output (kbtu/hr)", submitOnChange: true
+                            input "capY2", "number", required: false, title: "Heat pump stage 2 output (kbtu/hr)", submitOnChange: true
+                            break
+                    }
+            }
+            switch ("$equip_type") {
+                case "Furnace only":
+                case "Furnace and Air Conditioning":
+                case "Heat Pump with Backup Furnace":
+                    switch ("$heat_type") {
+                        case "Single stage":
+                            input "capW1", "number", required: false, title: "Furnace output (kbtu/hr)", submitOnChange: true
+                            break
+                        case "Two stage":
+                            input "capW1", "number", required: false, title: "Furnace stage 1 output (kbtu/hr)", submitOnChange: true
+                            input "capW2", "number", required: false, title: "Furnace stage 2 output (kbtu/hr)", submitOnChange: true
                             break
                     }
             }
@@ -91,40 +132,71 @@ def pageTwo() {
                 case "Furnace and Air Conditioning":
                     switch ("$cool_type") {
                         case "Single stage":
-                            input "capY1", "number", required: false, title: "Cooling output (kbtu/hr)", range: "6 . . 120", submitOnChange: true
+                            input "capY1", "number", required: false, title: "Air conditioner output (kbtu/hr)", submitOnChange: true
                             break
                         case "Two stage":
-                            input "capY1", "number", required: false, title: "Stage 1 cooling output (kbtu/hr)", range: "6 . . 120", submitOnChange: true
-                            input "capY2", "number", required: false, title: "Stage 2 cooling output (kbtu/hr)", range: "6 . . 120", submitOnChange: true
+                            input "capY1", "number", required: false, title: "Air conditioner stage 1 output (kbtu/hr)", submitOnChange: true
+                            input "capY2", "number", required: false, title: "Air conditioner stage 2 output (kbtu/hr)", submitOnChange: true
                             break
                     }
             }
         }
         section ("Blower Data") {
             switch ("$equip_type") {
+                case "Heat Pump only":
+                case "Heat Pump with Electric Backup":
+                case "Heat Pump with Backup Furnace":
+                    switch ("$cool_type") {
+                        case "Single stage":
+                            if (capY1) {
+                                est = capY1 * 200 / 6
+                                input "cfmY1", "number", required: true, title: "Airflow for heat pump (cfm) (suggest $est based on output)"
+                            } else {
+                                input "cfmY1", "number", required: true, title: "Airflow for heat pump (cfm)"
+                            }
+                            break
+                        case "Two stage":
+                            if (capY1) {
+                                est = capY1 * 200 / 6
+                                input "cfmY1", "number", required: true, title: "Airflow for heat pump stage 1 (cfm) (suggest $est based on output)"
+                            } else {
+                                input "cfmY1", "number", required: true, title: "Airflow for heat pump stage 1 (cfm)"
+                            }
+                            if (capY2) {
+                                est = capY2 * 200 / 6
+                                input "cfmY2", "number", required: true, title: "Airflow for heat pump stage 2 (cfm) (suggest $est based on output)"
+                            } else {
+                                input "cfmY2", "number", required: true, title: "Airflow for heat pump stage 2 (cfm)"
+                            }
+                            break
+                    }
+                    break
+            }
+            switch ("$equip_type") {
                 case "Furnace only":
                 case "Furnace and Air Conditioning":
+                case "Heat Pump with Backup Furnace":
                     switch ("$heat_type") {
                         case "Single stage":
                             if (capW1) {
                                 est = capW1 * 20
-                                input "cfmW1", "number", required: true, title: "Airflow for heating (cfm) (suggest $est based on output)", range: "200 . . 3600"
+                                input "cfmW1", "number", required: true, title: "Airflow for furnace (cfm) (suggest $est based on output)"
                             } else {
-                                input "cfmW1", "number", required: true, title: "Airflow for heating (cfm)", range: "200 . . 3600"
+                                input "cfmW1", "number", required: true, title: "Airflow for furnace (cfm)"
                             }
                             break
                         case "Two stage":
                             if (capW1) {
                                 est = capW1 * 20
-                                input "cfmW1", "number", required: true, title: "Airflow for heating stage 1 (cfm) (suggest $est based on output)", range: "200 . . 3600"
+                                input "cfmW1", "number", required: true, title: "Airflow for furnace stage 1 (cfm) (suggest $est based on output)"
                             } else {
-                                input "cfmW1", "number", required: true, title: "Airflow for heating stage 1 (cfm)", range: "200 . . 3600"
+                                input "cfmW1", "number", required: true, title: "Airflow for furnace stage 1 (cfm)"
                             }
                             if (capW2) {
                                 est = capW2 * 20
-                                input "cfmW2", "number", required: true, title: "Airflow for heating stage 2 (cfm) (suggest $est based on output)", range: "200 . . 3600"
+                                input "cfmW2", "number", required: true, title: "Airflow for furnace stage 2 (cfm) (suggest $est based on output)"
                             } else {
-                                input "cfmW2", "number", required: true, title: "Airflow for heating stage 2 (cfm)", range: "200 . . 3600"
+                                input "cfmW2", "number", required: true, title: "Airflow for furnace stage 2 (cfm)"
                             }
                             break
                     }
@@ -136,62 +208,80 @@ def pageTwo() {
                         case "Single stage":
                             if (capY1) {
                                 est = capY1 * 200 / 6
-                                input "cfmY1", "number", required: true, title: "Airflow for cooling (cfm) (suggest $est based on output)", range: "200 . . 5000"
+                                input "cfmY1", "number", required: true, title: "Airflow for air conditioner (cfm) (suggest $est based on output)"
                             } else {
-                                input "cfmY1", "number", required: true, title: "Airflow for cooling (cfm)", range: "200 . . 5000"
+                                input "cfmY1", "number", required: true, title: "Airflow for air conditioner (cfm)"
                             }
                             break
                         case "Two stage":
                             if (capY1) {
                                 est = capY1 * 200 / 6
-                                input "cfmY1", "number", required: true, title: "Airflow for cooling stage 1 (cfm) (suggest $est based on output)", range: "200 . . 5000"
+                                input "cfmY1", "number", required: true, title: "Airflow for air conditioner stage 1 (cfm) (suggest $est based on output)"
                             } else {
-                                input "cfmY1", "number", required: true, title: "Airflow for cooling stage 1 (cfm)", range: "200 . . 5000"
+                                input "cfmY1", "number", required: true, title: "Airflow for air conditioner stage 1 (cfm)"
                             }
                             if (capY2) {
                                 est = capY2 * 200 / 6
-                                input "cfmY2", "number", required: true, title: "Airflow for cooling stage 2 (cfm) (suggest $est based on output)", range: "200 . . 5000"
+                                input "cfmY2", "number", required: true, title: "Airflow for air conditioner stage 2 (cfm) (suggest $est based on output)"
                             } else {
-                                input "cfmY2", "number", required: true, title: "Airflow for cooling stage 2 (cfm)", range: "200 . . 5000"
+                                input "cfmY2", "number", required: true, title: "Airflow for air conditioner stage 2 (cfm)"
                             }
                             break
                     }
+                    break
             }
-            input "cfmG", "number", required: true, title: "Airflow for fan only (cfm)", range: "200 . . 3000"
+            input "cfmG", "number", required: true, title: "Airflow for fan only (cfm)"
             switch ("$dehumidifer_type") {
                 case "Outputs to Supply Plenum":
-                    input "cfmDeHum", "number", required: true, title: "Airflow for dehumidifier (cfm)", range: "100 . . 3000"
+                    input "cfmDeHum", "number", required: true, title: "Airflow for dehumidifier (cfm)"
             }
         }
         humidity_required = false
         section ("Equipment Control Switches") {
             switch ("$equip_type") {
-                case "Furnace only":
-                case "Furnace and Air Conditioning":
-                    switch ("$heat_type") {
-                        case "Single stage":
-                            input "W1", "capability.switch", required: true, title: "Command Heat (probably labeled W/W1 on furnace)"
-                            break
-                        case "Two stage":
-                            input "W1", "capability.switch", required: true, title: "Command Heat stage 1 (probably labeled W/W1 on furnace)"
-                            input "W2", "capability.switch", required: true, title: "Command Heat stage 2 (probably labeled W2 on furnace)"
-                            break
-                    }
-            }
-            switch ("$equip_type") {
                 case "Air Conditioning only":
                 case "Furnace and Air Conditioning":
+                case "Heat Pump only":
+                case "Heat Pump with Electric Backup":
+                case "Heat Pump with Backup Furnace":
                     switch ("$cool_type") {
                         case "Single stage":
-                            input "Y1", "capability.switch", required: true, title: "Command Cooling (probably labeled Y/Y2 on furnace)"
+                            input "Y1", "capability.switch", required: true, title: "Command Compressor (probably labeled Y/Y2 on air handler)"
                             break
                         case "Two stage":
-                            input "Y1", "capability.switch", required: true, title: "Command Cooling stage 1 (probably labeled Y1 on furnace)"
-                            input "Y2", "capability.switch", required: true, title: "Command Cooling stage 2 (probably laeled Y/Y2 on furnace)"
+                            input "Y1", "capability.switch", required: true, title: "Command Compressor stage 1 (probably labeled Y1 on air handler)"
+                            input "Y2", "capability.switch", required: true, title: "Command Compressor stage 2 (probably laeled Y/Y2 on air handler)"
                             break
                     }
                     if (cool_dehum_mode) {
                         input "cool_dehum", "capability.switch", required: true, title: "Command Dehumidify mode"
+                    }
+            }
+            switch ("$equip_type") {
+                case "Heat Pump only":
+                case "Heat Pump with Electric Backup":
+                case "Heat Pump with Backup Furnace":
+                    if (rv_heat) {
+                        input "OB", "capability.switch", required: true, title: "Reversing Valve (probably labeled B or O/B on air handler)"
+                    } else {
+                        input "OB", "capability.switch", required: true, title: "Reversing Valve (probably labeled O or O/B on air handler)"
+                    }
+            }
+            switch ("$equip_type") {
+                case "Heat Pump with Electric Backup":
+                    input "W1", "capability.switch", required: true, title: "Command Electric Backup Heat (probably labeled W/W1 on air handler)"
+                    break
+                case "Heat Pump with Backup Furnace":
+                case "Furnace only":
+                case "Furnace and Air Conditioning":
+                    switch ("$heat_type") {
+                        case "Single stage":
+                            input "W1", "capability.switch", required: true, title: "Command Furnace (probably labeled W/W1 on air handler)"
+                            break
+                        case "Two stage":
+                            input "W1", "capability.switch", required: true, title: "Command Furnace stage 1 (probably labeled W/W1 on air handler)"
+                            input "W2", "capability.switch", required: true, title: "Command Furnace stage 2 (probably labeled W2 on air handler)"
+                            break
                     }
             }
             input "G", "capability.switch", required:true, title: "Command Fan (probably labeled G on furnace)"
@@ -233,33 +323,111 @@ def pageThree() {
         section ("Control Parameters") {
             switch ("$equip_type") {
                 case "Furnace and Air Conditioning":
-                    input "mode_change_delay", "number", required: true, title: "Minimum time between heating and cooling (minutes)", range: "10 . . 300"
+                case "Heat Pump only":
+                case "Heat Pump with Electric Backup":
+                case "Heat Pump with Backup Furnace":
+                    input "mode_change_delay", "number", required: true, title: "Minimum time between heating and cooling (minutes)"
+            }
+            switch ("$equip_type") {
+                case "Heat Pump only":
+                case "Heat Pump with Electric Backup":
+                case "Heat Pump with Backup Furnace":
+                    switch ("$cool_type") {
+                        case "Two stage":
+                            if (outdoor_temp) {
+                                input (name:"cool_stage2_criteria", type: "enum", required: false, title: "Criteria for using high stage of heat pump",
+                                    options: ["Runtime in low stage","Setpoint/Temp difference","Total demand threshold","When a switch is on","Outdoor temp"],
+                                    submitOnChange: true, multiple: true)
+                            } else {
+                                input (name:"cool_stage2_criteria", type: "enum", required: false, title: "Criteria for using high stage of heat pump",
+                                    options: ["Runtime in low stage","Setpoint/Temp difference","Total demand threshold","When a switch is on"],
+                                    submitOnChange: true, multiple: true)
+                            }
+                            if (cool_stage2_criteria) {
+                                if (cool_stage2_criteria.findAll { it == "Runtime in low stage" }) {
+                                    input "cool_stage2_delay", "number", required: true, title: "Time in stage 1 to trigger stage 2 (minutes)"
+                                }
+                                if (cool_stage2_criteria.findAll { it == "Setpoint/Temp difference" }) {
+                                    input "cool_stage2_delta", "number", required: true, title: "Setpoint/Temp difference to trigger stage 2"
+                                }
+                                if (cool_stage2_criteria.findAll { it == "Total demand threshold" }) {
+                                    input "cool_stage2_threshold", "number", required: true, title: "Demand to trigger stage 2 (cfm)"
+                                }
+                                if (cool_stage2_criteria.findAll { it == "When a switch is on" }) {
+                                    input "cool_stage2_switch", "capability.switch", required: true, title: "Switch for using high stage"
+                                }
+                                if (cool_stage2_criteria.findAll { it == "Outdoor temp" }) {
+                                    input "cool_stage2_outdoor_threshold", "number", required: true, title: "Temperature above which high stage is used for cooling"
+                                }
+                                if (cool_stage2_criteria.size() > 1) {
+                                    input "cool_stage2_and", "bool", required: true, title: "Require ALL conditions?", default: false
+                                }
+                            }
+                        case "Single stage":
+                            input "cool_min_runtime", "number", required: true, title: "Minimum Cooling Runtime (minutes)"
+                            input "cool_min_idletime", "number", required: true, title: "Minimum Cooling Idle Time (minutes)"
+                            input "heat_min_runtime", "number", required: true, title: "Minimum Heating Runtime (minutes)"
+                            input "heat_min_idletime", "number", required: true, title: "Minimum Heating Idle Time (minutes)"
+                            break
+                    }
+            }
+            switch ("$equip_type") {
+                case "Heat Pump with Electric Backup":
+                case "Heat Pump with Backup Furnace":
+                    if (outdoor_temp) {
+                        input (name:"backup_heat_criteria", type: "enum", required: false, title: "Criteria for using backup heat",
+                            options: ["Runtime in heat pump","Setpoint/Temp difference","When a switch is on","Outdoor temp"],
+                            submitOnChange: true, multiple: true)
+                    } else {
+                        input (name:"backup_heat_criteria", type: "enum", required: false, title: "Criteria for using backup heat",
+                            options: ["Runtime in heat pump","Setpoint/Temp difference","When a switch is on"],
+                            submitOnChange: true, multiple: true)
+                    }
+                    if (backup_heat_criteria) {
+                        if (backup_heat_criteria.findAll { it == "Runtime in heat pump" }) {
+                            input "backup_heat_delay", "number", required: true, title: "Heat pump runtime to trigger backup heat (minutes)"
+                        }
+                        if (backup_heat_criteria.findAll { it == "Setpoint/Temp difference" }) {
+                            input "backup_heat_delta", "number", required: true, title: "Setpoint/Temp difference to trigger backup heat"
+                        }
+                        if (backup_heat_criteria.findAll { it == "When a switch is on" }) {
+                            input "backup_heat_switch", "capability.switch", required: true, title: "Switch for using backup heat"
+                        }
+                        if (backup_heat_criteria.findAll { it == "Outdoor temp" }) {
+                            input "backup_heat_outdoor_threshold", "number", required: true, title: "Temperature below which backup heat is used"
+                        }
+                        if (backup_heat_criteria.size() > 1) {
+                            input "backup_heat_and", "bool", required: true, title: "Require ALL conditions?", default: false
+                        }
+                    }
+                    input "emergency_heat_stats", "capability.thermostat", required: false, multiple: true, title: "Thermostats permitted to call for emergency heat"
             }
             switch ("$equip_type") {
                 case "Furnace only":
                 case "Furnace and Air Conditioning":
+                case "Heat Pump with Backup Furnace":
                     switch ("$heat_type") {
                         case "Two stage":
                             if (outdoor_temp) {
-                                input (name:"heat_stage2_criteria", type: "enum", required: false, title: "Criteria for using high stage heat",
-                                    options: ["Runtime in low stage","Setpoint/Temp difference","Total heat demand threshold","When a switch in on","Outdoor temp"],
+                                input (name:"heat_stage2_criteria", type: "enum", required: false, title: "Criteria for using high stage of furnace",
+                                    options: ["Runtime in low stage","Setpoint/Temp difference","Total heat demand threshold","When a switch is on","Outdoor temp"],
                                     submitOnChange: true, multiple: true)
                             } else {
-                                input (name:"heat_stage2_criteria", type: "enum", required: false, title: "Criteria for using high stage heat",
-                                    options: ["Runtime in low stage","Setpoint/Temp difference","Total heat demand threshold","When a switch in on"],
+                                input (name:"heat_stage2_criteria", type: "enum", required: false, title: "Criteria for using high stage of furnace",
+                                    options: ["Runtime in low stage","Setpoint/Temp difference","Total heat demand threshold","When a switch is on"],
                                     submitOnChange: true, multiple: true)
                             }
                             if (heat_stage2_criteria) {
                                 if (heat_stage2_criteria.findAll { it == "Runtime in low stage" }) {
-                                    input "heat_stage2_delay", "number", required: true, title: "Time in stage 1 heating to trigger stage 2 (minutes)", range: "0 . . 300", default: "30"
+                                    input "heat_stage2_delay", "number", required: true, title: "Time in stage 1 heating to trigger stage 2 (minutes)"
                                 }
                                 if (heat_stage2_criteria.findAll { it == "Setpoint/Temp difference" }) {
-                                    input "heat_stage2_delta", "number", required: true, title: "Setpoint/Temp difference to trigger stage 2 heating", range: "1 . . 100", default: "2"
+                                    input "heat_stage2_delta", "number", required: true, title: "Setpoint/Temp difference to trigger stage 2 heating"
                                 }
                                 if (heat_stage2_criteria.findAll { it == "Total heat demand threshold" }) {
-                                    input "heat_stage2_threshold", "number", required: true, title: "Heat demand to trigger stage 2 heating (cfm)", range: "500 . . 3000", default: "2000"
+                                    input "heat_stage2_threshold", "number", required: true, title: "Heat demand to trigger stage 2 heating (cfm)"
                                 }
-                                if (heat_stage2_criteria.findAll { it == "When a switch in on" }) {
+                                if (heat_stage2_criteria.findAll { it == "When a switch is on" }) {
                                     input "heat_stage2_switch", "capability.switch", required: true, title: "Switch for using high stage heat"
                                 }
                                 if (heat_stage2_criteria.findAll { it == "Outdoor temp" }) {
@@ -269,9 +437,10 @@ def pageThree() {
                                     input "heat_stage2_and", "bool", required: true, title: "Require ALL conditions?", default: false
                                 }
                             }
+                            if ("$equip_type" == "Heat Pump with Backup Furnace") { break }
                         case "Single stage":
-                            input "heat_min_runtime", "number", required: true, title: "Minimum Heating Runtime (minutes)", range: "1 . . 30", default: "10"
-                            input "heat_min_idletime", "number", required: true, title: "Minimum Heating Idle Time (minutes)", range: "1 . . 30", default: "5"
+                            input "heat_min_runtime", "number", required: true, title: "Minimum Heating Runtime (minutes)"
+                            input "heat_min_idletime", "number", required: true, title: "Minimum Heating Idle Time (minutes)"
                             break
                     }
             }
@@ -281,25 +450,25 @@ def pageThree() {
                     switch ("$cool_type") {
                         case "Two stage":
                             if (outdoor_temp) {
-                                input (name:"cool_stage2_criteria", type: "enum", required: false, title: "Criteria for using high stage cooling",
-                                    options: ["Runtime in low stage","Setpoint/Temp difference","Total cool demand threshold","When a switch in on","Outdoor temp"],
+                                input (name:"cool_stage2_criteria", type: "enum", required: false, title: "Criteria for using high stage of air conditioner",
+                                    options: ["Runtime in low stage","Setpoint/Temp difference","Total cool demand threshold","When a switch is on","Outdoor temp"],
                                     submitOnChange: true, multiple: true)
                             } else {
-                                input (name:"cool_stage2_criteria", type: "enum", required: false, title: "Criteria for using high stage cooling",
-                                    options: ["Runtime in low stage","Setpoint/Temp difference","Total cool demand threshold","When a switch in on"],
+                                input (name:"cool_stage2_criteria", type: "enum", required: false, title: "Criteria for using high stage of air conditioner",
+                                    options: ["Runtime in low stage","Setpoint/Temp difference","Total cool demand threshold","When a switch is on"],
                                     submitOnChange: true, multiple: true)
                             }
                             if (cool_stage2_criteria) {
                                 if (cool_stage2_criteria.findAll { it == "Runtime in low stage" }) {
-                                    input "cool_stage2_delay", "number", required: true, title: "Time in stage 1 cooling to trigger stage 2 (minutes)", range: "0 . . 300", default: "30"
+                                    input "cool_stage2_delay", "number", required: true, title: "Time in stage 1 cooling to trigger stage 2 (minutes)"
                                 }
                                 if (cool_stage2_criteria.findAll { it == "Setpoint/Temp difference" }) {
-                                    input "cool_stage2_delta", "number", required: true, title: "Setpoint/Temp difference to trigger stage 2 cooling", range: "1 . . 100", default: "2"
+                                    input "cool_stage2_delta", "number", required: true, title: "Setpoint/Temp difference to trigger stage 2 cooling"
                                 }
                                 if (cool_stage2_criteria.findAll { it == "Total cool demand threshold" }) {
-                                    input "cool_stage2_threshold", "number", required: true, title: "Cooling demand to trigger stage 2 cooling (cfm)", range: "500 . . 3000", default: "2000"
+                                    input "cool_stage2_threshold", "number", required: true, title: "Cooling demand to trigger stage 2 cooling (cfm)"
                                 }
-                                if (cool_stage2_criteria.findAll { it == "When a switch in on" }) {
+                                if (cool_stage2_criteria.findAll { it == "When a switch is on" }) {
                                     input "cool_stage2_switch", "capability.switch", required: true, title: "Switch for using high stage cooling"
                                 }
                                 if (cool_stage2_criteria.findAll { it == "Outdoor temp" }) {
@@ -310,8 +479,8 @@ def pageThree() {
                                 }
                             }
                         case "Single stage":
-                            input "cool_min_runtime", "number", required: true, title: "Minimum Cooling Runtime (minutes)", range: "1 . . 30", default: "10"
-                            input "cool_min_idletime", "number", required: true, title: "Minimum Cooling Idle Time (minutes)", range: "1 . . 30", default: "5"
+                            input "cool_min_runtime", "number", required: true, title: "Minimum Cooling Runtime (minutes)"
+                            input "cool_min_idletime", "number", required: true, title: "Minimum Cooling Idle Time (minutes)"
                             break
                     }
             }
@@ -412,6 +581,16 @@ def updated() {
 def initialize() {
     log.debug("In initialize()")
     // Subscribe to state changes for inputs and set state variables to reflect their current values
+    switch ("$equip_type") {
+        case "Heat Pump with Electric Backup":
+        case "Heat Pump with Backup Furnace":
+            if (emergency_heat_stats) {
+                emergency_heat_stats.each { ehs ->
+                    subscribe(ehs, "thermostatMode", set_emergency_heat)
+                }
+            }
+            set_emergency_heat()
+    }
     switch ("$vent_type") {
         case "Requires Blower":
         case "Doesn't Require Blower":
@@ -557,8 +736,16 @@ def initialize() {
         // call update_equipment_state to put outputs in a state consistent with the current inputs
         update_equipment_state()
     }
+    if (backup_heat_criteria) {
+        if (backup_heat_criteria.findAll { it == "When a switch is on" }) {
+            subscribe(backup_heat_switch, "switch", backup_heat)
+        }
+        if (backup_heat_criteria.findAll { it == "Outdoor temp" }) {
+            subscribe(outdoor_temp, "temperature", backup_heat)
+        }
+    }
     if (heat_stage2_criteria) {
-        if (heat_stage2_criteria.findAll { it == "When a switch in on" }) {
+        if (heat_stage2_criteria.findAll { it == "When a switch is on" }) {
             subscribe(heat_stage2_switch, "switch", stage2_heat)
         }
         if (heat_stage2_criteria.findAll { it == "Outdoor temp" }) {
@@ -566,7 +753,7 @@ def initialize() {
         }
     }
     if (cool_stage2_criteria) {
-        if (cool_stage2_criteria.findAll { it == "When a switch in on" }) {
+        if (cool_stage2_criteria.findAll { it == "When a switch is on" }) {
             subscribe(cool_stage2_switch, "switch", stage2_cool)
         }
         if (cool_stage2_criteria.findAll { it == "Outdoor temp" }) {
@@ -576,7 +763,7 @@ def initialize() {
 }
 
 def refresh_outputs() {
-    // log.debug("In refresh_outputs() state is $atomicState.equip_state")
+    log.debug("In refresh_outputs() state is $atomicState.equip_state")
     switch ("$atomicState.equip_state") {
         case "Heating": 
         case "HeatingL": 
@@ -1054,8 +1241,18 @@ def wired_tstatHandler(evt=NULL) {
     }
 }
 
+def set_emergency_heat(evt=NULL) {
+    atomicState.emergency_heat = false
+    if (emergency_heat_stats) {
+        emergency_heat_stats.each { ehs ->
+            mode_value = ehs.currentValue("thermostatMode")
+            if (mode_value == "emergency heat") { atomicState.emergency_heat = true }
+        }
+    }
+}
+
 def update_equipment_state() {
-    // log.debug("In update_equipment_state() - current state is $atomicState.equip_state")  
+    log.debug("In update_equipment_state() - current state is $atomicState.equip_state")  
     // this section updates the state and, in heating and cooling modes, selects the zones and equipment
     switch ("$atomicState.equip_state") {
         case "Idle":
@@ -1109,7 +1306,7 @@ def update_equipment_state() {
 }
 
 def equipment_state_timeout() {
-    // log.debug("In equipment_state_timeout()")
+    log.debug("In equipment_state_timeout() - state is $atomicState.equip_state")
     switch ("$atomicState.equip_state") {
         case "Idle":
             status_device = getChildDevice("HVACZoning_${app.id}")
@@ -1161,7 +1358,7 @@ def equipment_state_timeout() {
 }
 
 def periodic_check() {
-    // log.debug("In periodic_check()")
+    log.debug("In periodic_check()")
     // check whether we are stuck in a state
     switch ("$atomicState.equip_state") {
         case "PauseH":
@@ -1216,20 +1413,78 @@ def periodic_check() {
     // start or stop humidifier and/or dehumidifier if necessary
     update_humidity_equip()
     // check whether heating outputs are in correct state
+    W1_value = "TBD"
+    W2_value = "TBD"
+    Y1_value = "TBD"
+    Y2_value = "TBD"
+    G_value = G.currentValue("switch")
     switch ("$equip_type") {
+        case "Heat Pump with Electric Backup":
+            W1_value = W1.currentValue("switch")
+            break
         case "Furnace only":
         case "Furnace and Air Conditioning":
-            W1_value = "TBD"
-            W2_value = "TBD"
+        case "Heat Pump with Backup Furnace":
             switch ("$heat_type") {
                 case "Two stage":
                     W2_value = W2.currentValue("switch")
                 case "Single stage":
                     W1_value = W1.currentValue("switch")
             }
-            switch ("$atomicState.equip_state") {
-                case "Heating":
-                case "HeatingL":
+    }
+    switch ("$equip_type") {
+        case "Air Conditioning only":
+        case "Furnace and Air Conditioning":
+        case "Heat Pump only":
+        case "Heat Pump with Electric Backup":
+        case "Heat Pump with Backup Furnace":
+            switch ("$cool_type") {
+                case "Two stage":
+                    Y2_value = Y2.currentValue("switch")
+                case "Single stage":
+                    Y1_value = Y1.currentValue("switch")
+            }
+    }
+    switch ("$atomicState.equip_state") {
+        case "Cooling":
+        case "CoolingL":
+            switch("$Y1_value") {
+                case "off":
+                    status_device = getChildDevice("HVACZoning_${app.id}")
+                    status_device.debug("Y1 is off in state $state.equip_state")
+                    log.debug("Y1 is off in state $state.equip_state")
+                    Y1.on()
+                    update_cool_run()
+            }
+            switch("$G_value") {
+                case "off":
+                    status_device = getChildDevice("HVACZoning_${app.id}")
+                    status_device.debug("G is off in state $state.equip_state")
+                    log.debug("G is off in state $state.equip_state")
+                    G.on()
+            }
+            switch("$W1_value") {
+                case "on":
+                    status_device = getChildDevice("HVACZoning_${app.id}")
+                    status_device.debug("W1 is on in state $atomicState.equip_state")
+                    log.debug("1 - W1 is on in state $atomicState.equip_state")
+                    W1.off()
+            }
+            switch("$W2_value") {
+                case "on":
+                    status_device = getChildDevice("HVACZoning_${app.id}")
+                    status_device.debug("W2 is on in state $atomicState.equip_state")
+                    log.debug("1 - W2 is on in state $atomicState.equip_state")
+                    W2.off()
+            }
+            break
+        case "Heating":
+        case "HeatingL":
+            switch ("$equip_type") {
+                case "Heat Pump with Backup Furnace":
+                    if (!atomicState.backup_heat) { break }
+                case "Furnace only":
+                case "Furnace and Air Conditioning":
                     switch("$W1_value") {
                         case "off":
                             status_device = getChildDevice("HVACZoning_${app.id}")
@@ -1238,71 +1493,6 @@ def periodic_check() {
                             W1.on()
                             update_heat_run()
                     }
-                    break
-                case "Idle":
-                case "IdleH":
-                case "IdleC":
-                case "PauseH":
-                case "PauseC":
-                case "Cooling":
-                case "CoolingL":
-                    switch("$W1_value") {
-                        case "on":
-                            status_device = getChildDevice("HVACZoning_${app.id}")
-                            status_device.debug("W1 is on in state $atomicState.equip_state")
-                            log.debug("W1 is on in state $atomicState.equip_state")
-                            W1.off()
-                    }
-                    switch("$W2_value") {
-                        case "on":
-                            status_device = getChildDevice("HVACZoning_${app.id}")
-                            status_device.debug("W2 is on in state $atomicState.equip_state")
-                            log.debug("W2 is on in state $atomicState.equip_state")
-                            W2.off()
-                    }
-                    break
-            }
-    }
-    // check whether cooling outputs are in correct state
-    switch ("$equip_type") {
-        case "Air Conditioning":
-        case "Furnace and Air Conditioning":
-            Y1_value = "TBD"
-            Y2_value = "TBD"
-            G_value = "TBD"
-            switch ("$cool_type") {
-                case "Two stage":
-                    Y2_value = Y2.currentValue("switch")
-                case "Single stage":
-                    Y1_value = Y1.currentValue("switch")
-                    G_value = G.currentValue("switch")
-            }
-            switch ("$atomicState.equip_state") {
-                case "Cooling":
-                case "CoolingL":
-                    switch("$Y1_value") {
-                        case "off":
-                            status_device = getChildDevice("HVACZoning_${app.id}")
-                            status_device.debug("Y1 is off in state $state.equip_state")
-                            log.debug("Y1 is off in state $state.equip_state")
-                            Y1.on()
-                            update_cool_run()
-                    }
-                    switch("$G_value") {
-                        case "off":
-                            status_device = getChildDevice("HVACZoning_${app.id}")
-                            status_device.debug("G is off in state $state.equip_state")
-                            log.debug("G is off in state $state.equip_state")
-                            G.on()
-                    }
-                    break
-                case "Idle":
-                case "IdleH":
-                case "IdleC":
-                case "PauseH":
-                case "PauseC":
-                case "Heating":
-                case "HeatingL":
                     switch("$Y1_value") {
                         case "on":
                             status_device = getChildDevice("HVACZoning_${app.id}")
@@ -1317,15 +1507,75 @@ def periodic_check() {
                             log.debug("Y2 is on in state $atomicState.equip_state")
                             Y2.off()
                     }
-                    break
             }
+            switch ("$equip_type") {
+                case "Heat Pump with Backup Furnace":
+                    if (atomicState.backup_heat) { break }
+                    switch("$W1_value") {
+                        case "on":
+                            status_device = getChildDevice("HVACZoning_${app.id}")
+                            status_device.debug("W1 is on in state $atomicState.equip_state")
+                            log.debug("2 - W1 is on in state $atomicState.equip_state")
+                            W1.off()
+                    }
+                    switch("$W2_value") {
+                        case "on":
+                            status_device = getChildDevice("HVACZoning_${app.id}")
+                            status_device.debug("W2 is on in state $atomicState.equip_state")
+                            log.debug("2 - W2 is on in state $atomicState.equip_state")
+                            W2.off()
+                    }
+                case "Heat Pump only":
+                case "Heat Pump with Electric Backup":
+                    switch("$Y1_value") {
+                        case "off":
+                            status_device = getChildDevice("HVACZoning_${app.id}")
+                            status_device.debug("Y1 is off in state $state.equip_state")
+                            log.debug("Y1 is off in state $state.equip_state")
+                            Y1.on()
+                            update_heat_run()
+                    }
+            }
+            break
+        case "Idle":
+        case "IdleH":
+        case "IdleC":
+        case "PauseH":
+        case "PauseC":
+            switch("$W1_value") {
+                case "on":
+                    status_device = getChildDevice("HVACZoning_${app.id}")
+                    status_device.debug("W1 is on in state $atomicState.equip_state")
+                    log.debug("3 - W1 is on in state $atomicState.equip_state")
+                    W1.off()
+            }
+            switch("$W2_value") {
+                case "on":
+                    status_device = getChildDevice("HVACZoning_${app.id}")
+                    status_device.debug("W2 is on in state $atomicState.equip_state")
+                    log.debug("3 - W2 is on in state $atomicState.equip_state")
+                    W2.off()
+            }
+            switch("$Y1_value") {
+                case "on":
+                    status_device = getChildDevice("HVACZoning_${app.id}")
+                    status_device.debug("Y1 is on in state $atomicState.equip_state")
+                    log.debug("Y1 is on in state $atomicState.equip_state")
+                    Y1.off()
+            }
+            switch("$Y2_value") {
+                case "on":
+                    status_device = getChildDevice("HVACZoning_${app.id}")
+                    status_device.debug("Y2 is on in state $atomicState.equip_state")
+                    log.debug("Y2 is on in state $atomicState.equip_state")
+                    Y2.off()
+            }
+            break
     }
     // check whether vent outputs are in correct state
     V_value = "TBD"
-    G_value = "TBD"
     switch ("$equip_type") {
         case "Requires Blower":
-            G_value = G.currentValue("switch")
         case "Doesn't Require Blower":
             V_value = V.currentValue("switch")
             switch ("$atomicState.vent_state") {
@@ -1542,41 +1792,154 @@ def update_humid_targets(evt=NULL) {
 Boolean servable_heat_call() {
     // check for servable heat call
     // log.debug("In servable_heat_call()")
-    switch ("$equip_type") {
-        case "Furnace only":
-        case "Furnace and Air Conditioning":
-            switch ("$heat_type") {
-                case "Single stage":
-                case "Two stage":
-                    if (atomicState.heat_demand > 0) {
-                         if (atomicState.heat_demand+atomicState.heat_accept+atomicState.off_capacity >= cfmW1) {
-                             return true;
-                         }
-                    }
-            }
+    if (atomicState.heat_demand > 0) {
+        switch ("$equip_type") {
+            case "Furnace only":
+            case "Furnace and Air Conditioning":
+                if (atomicState.heat_demand+atomicState.heat_accept+atomicState.off_capacity >= cfmW1) { return true }
+                break
+            case "Heat Pump only":
+            case "Heat Pump with Electric Backup":
+            case "Heat Pump with Backup Furnace":
+                if (atomicState.heat_demand+atomicState.heat_accept+atomicState.off_capacity >= cfmY1) { return true }
+                break
+        }
     }
     return false;
 }
 
 def start_heat_run() {
-    // log.debug("In start_heat_run()")
+    log.debug("In start_heat_run()")
     set_equip_state("HeatingL")
     atomicState.last_heating_start = now()
-    W1.on()
-    update_fan_state()
-    runIn(heat_min_runtime*60, equipment_state_timeout, [misfire: "ignore"]) // this will cause a transition to Heating state at the right time 
-    switch ("$heat_type") {
-        case "Two stage":
-            if (heat_stage2_delay) { runIn(heat_stage2_delay*60, stage2_heat, [misfire: "ignore"]) }
-            stage2_heat()
+    atomicState.backup_heat=false
+    switch ("$equip_type") {
+        case "Furnace only":
+        case "Furnace and Air Conditioning":
+            W1.on()
+            break
+        case "Heat Pump only":
+            Y1.on()
+            if (rv_heat) { OB.on() } else { OB.off() }
+            break
+        case "Heat Pump with Electric Backup":
+            if (atomicState.emergency_heat) {
+                W1.on() // Electric emergency heat is run without heat pump
+            } else {
+                Y1.on()
+                if (rv_heat) { OB.on() } else { OB.off() }
+                backup_heat()
+                if (atomicState.backup_heat) { W1.on() } // Electric backup heat is run in addition to heat pump
+            }
+            break
+        case "Heat Pump with Backup Furnace":
+            backup_heat()
+            if (atomicState.backup_heat || atomicState.emergency_heat) { // Furnace backup heat is run instead of heat pump
+                W1.on()
+            } else {
+                Y1.on()
+                if (rv_heat) { OB.on() } else { OB.off() }
+            }
+            break
+    }
+    // If two stage furnace (including backup to heat pump), then run stage2_heat check
+    switch ("$equip_type") {
+        case "Heat Pump with Backup Furnace":
+            if (!atomicState.backup_heat || atomicState.emergency_heat) { break }
+        case "Furnace only":
+        case "Furnace and Air Conditioning":
+            switch ("$heat_type") {
+                case "Two stage":
+                    if (heat_stage2_delay) { runIn(heat_stage2_delay*60, stage2_heat, [misfire: "ignore"]) }
+                    stage2_heat()
+            }
+    }
+    // If two stage heat_pump, then run stage2_cool check
+    switch ("$equip_type") {
+        case "Heat Pump with Backup Furnace":
+            if (atomicState.backup_heat || atomicState.emergency_heat) { break }
+        case "Heat Pump only":
+        case "Heat Pump with Electric Backup":
+            switch ("$cool_type") {
+                case "Two stage":
+                    if (cool_stage2_delay) { runIn(cool_stage2_delay*60, stage2_cool, [misfire: "ignore"]) }
+                    stage2_cool()
+            }
     }
     update_humidity_equip()
     equipment_on_adjust_vent()
     update_fan_state()
+    runIn(heat_min_runtime*60, equipment_state_timeout, [misfire: "ignore"]) // this will cause a transition to Heating state at the right time 
+}
+
+// This routine checks whether backup heat should be used and sets boolean variable atomicState.backup_heat accordingly.
+// This routine is called at the beginning of a heat run or periodic check (with evt == NULL) and when a variable used in a criteria changes (with evt != NULL)
+def backup_heat(evt=NULL) {
+    log.debug("In backup_heat()")
+    if (atomicState.backup_heat) { return } // If already in a heating run with backup heat on, keep backup heat on for the remainder of the run.
+    switch (atomicState.equip_state) {
+        case "Heating":
+        case "HeatingL":
+            if (backup_heat_criteria) {
+                num_satisfied = 0
+                backup_heat_criteria.each { crit ->
+                    switch ("$crit") {
+                        case "Runtime in heat pump":
+                            if (now() - atomicState.last_heating_start > backup_heat_delay * 60 * 1000) { num_satisfied++ }
+                            break
+                        case "Setpoint/Temp difference":
+                            def zones = getChildApps()
+                            BigDecimal max_delta = 0
+                            zones.each { z ->
+                                if (atomicState.main_zones.findAll { it == z.label }) {
+                                    BigDecimal delta = z.heat_delta_temp()
+                                    if (delta > max_delta) { max_delta = delta }
+                                 }
+                            }
+                            if (max_delta >= backup_heat_delta) { num_satisfied++ }
+                            break
+                        case "When a switch is on":
+                            if (backup_heat_switch) {
+                                switch_value = backup_heat_switch.currentValue("switch")
+                                if (switch_value == "on") { num_satisfied++ }
+                            }
+                            break
+                        case "Outdoor temp":
+                            if (outdoor_temp) {
+                                temp_value = outdoor_temp.currentValue("temperature")
+                                if (temp_value < backup_heat_outdoor_threshold) { num_satisfied++ }
+                            }
+                            break
+                        default:
+                            log.debug("Unknown backup_heat_criteria $crit")
+                    }
+                }
+                log.debug("num_satisfied = $num_satisfied")
+                if (backup_heat_criteria.size() > 0) {
+                    if (backup_heat_and) {
+                        if (num_satisfied == backup_heat_criteria.size()) {
+                            atomicState.backup_heat = true
+                            if (evt) {
+                                update_heat_run()
+                                update_zones()
+                            }
+                        }
+                    } else {
+                        if (num_satisfied > 0) {
+                            atomicState.backup_heat = true
+                            if (evt) {
+                                update_heat_run()
+                                update_zones()
+                            }
+                        }
+                    }
+                }
+            }
+    }
 }
 
 def stage2_heat(evt=NULL) {
-    // log.debug("In stage2_heat()")
+    log.debug("In stage2_heat() - state is $atomicState.equip_state")
     old_second_stage = atomicState.second_stage
     switch ("$atomicState.equip_state") {
         case "Heating":
@@ -1607,7 +1970,7 @@ def stage2_heat(evt=NULL) {
                                     case "Total heat demand threshold":
                                         if (atomicState.heat_demand >= heat_stage2_threshold) { num_satisfied++ }
                                         break
-                                    case "When a switch in on":
+                                    case "When a switch is on":
                                         if (heat_stage2_switch) {
                                             switch_value = heat_stage2_switch.currentValue("switch")
                                             if (switch_value == "on") { num_satisfied++ }
@@ -1653,11 +2016,14 @@ def stage2_heat(evt=NULL) {
 }
 
 def stage2_heat_on() {
-    switch ("$atomicState.equip_state") {
-        case "Heating":
-        case "HeatingL":
-            switch ("$heat_type") {
-                case "Two stage":
+    log.debug("In stage2_heat_on()")
+    switch ("$heat_type") {
+        case "Two stage":
+            switch ("$equip_type") {
+                case "Heat Pump with Backup Furnace":
+                  if (!atomicState.backup_heat && !atomicState.emergency_heat) { break }
+                case "Furnace only":
+                case "Furnace and Air Conditioning":
                     W2.on()
                     if (!atomicState.second_stage) { atomicState.second_stage = true }
             }
@@ -1665,22 +2031,63 @@ def stage2_heat_on() {
 }
 
 def stage2_heat_off() {
-    switch ("$equip_type") {
-        case "Furnace only":
-        case "Furnace and Air Conditioning":
-            switch ("$heat_type") {
-                case "Two stage":
-                    W2.off()
-            }
+    log.debug("In stage2_heat_off()")
+    switch ("$heat_type") {
+        case "Two stage":
+            W2.off()
     }
     if (atomicState.second_stage) { atomicState.second_stage = false }
 }
 
+// this routine may be called from update_equipment_state or from backup_heat()
 def update_heat_run() {
-    // log.debug("In update_heat_run()")
-    switch ("$heat_type") {
-        case "Two stage":
-            stage2_heat()
+    log.debug("In update_heat_run()")
+    switch ("$equip_type") {
+        case "Heat Pump with Electric Backup":
+            if (atomicState.emergency_heat) {
+                W1.on()
+                Y1.off()
+            } else if (atomicState.backup_heat) {
+                Y1.on()
+                W1.on()
+            } else {
+                Y1.on()
+                W1.off()
+            }
+            break
+        case "Heat Pump with Backup Furnace":
+            if (atomicState.backup_heat || atomicState.emergency_heat) {
+                W1.on()
+                Y1.off()
+            } else {
+                Y1.on()
+                W1.off()
+            }
+            break
+    }
+    // If two stage furnace (including backup to heat pump), then run stage2_heat check
+    switch ("$equip_type") {
+        case "Heat Pump with Backup Furnace":
+            if (!atomicState.backup_heat && !atomicState.emergency_heat) { break }
+        case "Furnace only":
+        case "Furnace and Air Conditioning":
+            switch ("$heat_type") {
+                case "Two stage":
+                    stage2_heat()
+                case "Single stage":
+                    if (Y2) { Y2.off() }
+            }
+    }
+    // If two stage heat_pump, then run stage2_cool check
+    switch ("$equip_type") {
+        case "Heat Pump with Backup Furnace":
+            if (atomicState.backup_heat || atomicState.emergency_heat) { break }
+        case "Heat Pump only":
+        case "Heat Pump with Electric Backup":
+            switch ("$cool_type") {
+                case "Two stage":
+                    stage2_cool()
+            }
     }
 }
 
@@ -1688,13 +2095,12 @@ def end_heat_run() {
     // log.debug("In end_heat_run()")
     set_equip_state("PauseH")
     atomicState.last_heating_stop = now()
-    switch ("$heat_type") {
-        case "Two stage":
-            stage2_heat_off()
-            unschedule(stage2_heat)
-        case "Single stage":
-            W1.off()
-    }
+    stage2_heat_off()
+    stage2_cool_off()
+    unschedule(stage2_heat)
+    unschedule(stage2_cool)
+    if (W1) { W1.off() }
+    if (Y1) { Y1.off() }
     runIn(heat_min_idletime*60, equipment_state_timeout, [misfire: "ignore"]) // this will cause a transition to IdleH state at the right time 
     update_humidity_equip()
     equipment_off_adjust_vent()
@@ -1709,14 +2115,13 @@ Boolean servable_cool_call() {
     switch ("$equip_type") {
         case "Air Conditioning only":
         case "Furnace and Air Conditioning":
-            switch ("$cool_type") {
-                case "Single stage":
-                case "Two stage":
-                    if (atomicState.cool_demand > 0) {
-                         if (atomicState.cool_demand+atomicState.cool_accept+atomicState.off_capacity >= cfmY1) {
-                             return true;
-                         }
-                    }
+        case "Heat Pump only":
+        case "Heat Pump with Electric Backup":
+        case "Heat Pump with Backup Furnace":
+            if (atomicState.cool_demand > 0) {
+                 if (atomicState.cool_demand+atomicState.cool_accept+atomicState.off_capacity >= cfmY1) {
+                     return true;
+                 }
             }
     }
     return false;
@@ -1726,7 +2131,14 @@ def start_cool_run() {
     // log.debug("In start_cool_run()")
     set_equip_state("CoolingL")
     atomicState.last_cooling_start = now()
+    atomicState.backup_heat=false
     Y1.on()
+    switch ("$equip_type") {
+        case "Heat Pump only":
+        case "Heat Pump with Electric Backup":
+        case "Heat Pump with Backup Furnace":
+            if (rv_heat) { OB.off() } else { OB.on() }
+    }
     update_fan_state()
     runIn(cool_min_runtime*60, equipment_state_timeout, [misfire: "ignore"]) // this will cause a transition to Cooling state at the right time 
     switch ("$cool_type") {
@@ -1739,9 +2151,11 @@ def start_cool_run() {
     update_fan_state()
 }
 
+// This routine may be called during a cooling run or during a heat pump heating run (with heat pump, same staging criteria are used for heating and cooling)
 def stage2_cool(evt=NULL) {
-    // log.debug("In stage2_cool()")
+    log.debug("In stage2_cool() - state is $atomicState.equip_state")
     old_second_stage = atomicState.second_stage
+    num_satisfied = 0
     switch ("$atomicState.equip_state") {
         case "Cooling":
         case "CoolingL":
@@ -1751,7 +2165,6 @@ def stage2_cool(evt=NULL) {
                         stage2_cool_off()
                     } else {
                         if (cool_stage2_criteria) {
-                            num_satisfied = 0
                             cool_stage2_criteria.each { crit ->
                                 switch ("$crit") {
                                     case "Runtime in low stage":
@@ -1771,7 +2184,7 @@ def stage2_cool(evt=NULL) {
                                     case "Total cool demand threshold":
                                         if (atomicState.cool_demand >= cool_stage2_threshold) { num_satisfied++ }
                                         break
-                                    case "When a switch in on":
+                                    case "When a switch is on":
                                         if (cool_stage2_switch) {
                                             switch_value = cool_stage2_switch.currentValue("switch")
                                             if (switch_value == "on") { num_satisfied++ }
@@ -1787,21 +2200,44 @@ def stage2_cool(evt=NULL) {
                                         log.debug("Unknown cool_stage2_criteria $crit")
                                 }
                             }
-                            if (cool_stage2_criteria.size() == 0) {
-                                stage2_cool_off()
-                            } else {
-                                if (cool_stage2_and) {
-                                    if (num_satisfied == cool_stage2_criteria.size()) {
-                                        stage2_cool_on()
-                                    } else {
-                                        stage2_cool_off()
-                                    }
-                                } else {
-                                    if (num_satisfied > 0) {
-                                        stage2_cool_on()
-                                    } else {
-                                        stage2_cool_off()
-                                    }
+                        } else {
+                            stage2_cool_off()
+                        }
+                   }
+            }
+            break
+        case "Heating":
+        case "HeatingL":
+            switch ("$cool_type") {
+                case "Two stage":
+                    if (atomicState.heat_demand + atomicState.off_capacity < cfmY2) {
+                        stage2_cool_off()
+                    } else {
+                        if (cool_stage2_criteria) {
+                            cool_stage2_criteria.each { crit ->
+                                switch ("$crit") {
+                                    case "Runtime in low stage":
+                                        if (now() - atomicState.last_heating_start > cool_stage2_delay * 60 * 1000) { num_satisfied++ }
+                                        break
+                                    case "Setpoint/Temp difference":
+                                        def zones = getChildApps()
+                                        BigDecimal max_delta = 0
+                                        zones.each { z ->
+                                            if (atomicState.main_zones.findAll { it == z.label }) {
+                                                BigDecimal delta = z.heat_delta_temp()
+                                                if (delta > max_delta) { max_delta = delta }
+                                            }
+                                        }
+                                        if (max_delta >= cool_stage2_delta) { num_satisfied++ }
+                                        break
+                                    case "When a switch is on":
+                                        if (cool_stage2_switch) {
+                                            switch_value = cool_stage2_switch.currentValue("switch")
+                                            if (switch_value == "on") { num_satisfied++ }
+                                        }
+                                        break
+                                   default:
+                                        log.debug("Unknown cool_stage2_criteria $crit")
                                 }
                             }
                         } else {
@@ -1811,17 +2247,45 @@ def stage2_cool(evt=NULL) {
             }
             break
     }
+    switch ("$atomicState.equip_state") {
+        case "Cooling":
+        case "CoolingL":
+        case "Heating":
+        case "HeatingL":
+            if (cool_stage2_criteria) {
+                if (cool_stage2_criteria.size() == 0) {
+                   stage2_cool_off()
+                } else {
+                    if (cool_stage2_and) {
+                        if (num_satisfied == cool_stage2_criteria.size()) {
+                            stage2_cool_on()
+                        } else {
+                            stage2_cool_off()
+                        }
+                    } else {
+                        if (num_satisfied > 0) {
+                            stage2_cool_on()
+                        } else {
+                            stage2_cool_off()
+                        }
+                    }
+                }
+            }
+    }
     if (old_second_stage != atomicState.second_stage) {
         update_zones()
     }
 }
 
 def stage2_cool_on() {
-    switch ("$atomicState.equip_state") {
-        case "Cooling":
-        case "CoolingL":
-            switch ("$cool_type") {
-                case "Two stage":
+    log.debug("In stage2_cool_on()")
+    switch ("$cool_type") {
+        case "Two stage":
+            switch ("$equip_type") {
+                case "Heat Pump with Backup Furnace":
+                  if (atomicState.backup_heat || atomicState.emergency_heat) { break }
+                case "Air Conditioning only":
+                case "Furnace and Air Conditioning":
                     Y2.on()
                     if (!atomicState.second_stage) { atomicState.second_stage = true }
             }
@@ -1829,13 +2293,10 @@ def stage2_cool_on() {
 }
 
 def stage2_cool_off() {
-    switch ("$equip_type") {
-        case "Air Conditioning only":
-        case "Furnace and Air Conditioning":
-            switch ("$cool_type") {
-                case "Two stage":
-                    Y2.off()
-            }
+    log.debug("In stage2_cool_off()")
+    switch ("$cool_type") {
+        case "Two stage":
+            Y2.off()
     }
     if (atomicState.second_stage) { atomicState.second_stage = false }
 }
@@ -1992,16 +2453,50 @@ def update_zones() {
         case "Heating":
         case "HeatingL":
             current_state = "Heating"
-            if (atomicState.second_stage) {
-                flow = cfmW2 - atomicState.off_capacity
-                if (capW2) {
-                    heat_output = capW2
-                }
-            } else {
-                flow = cfmW1 - atomicState.off_capacity
-                if (capW1) {
-                    heat_output = capW1
-                }
+            switch ("$equip_type") {
+                case "Furnace only":
+                case "Furnace and Air Conditioning":
+                    if (atomicState.second_stage) {
+                        flow = cfmW2 - atomicState.off_capacity
+                        if (capW2) {
+                            heat_output = capW2
+                        }
+                    } else {
+                        flow = cfmW1 - atomicState.off_capacity
+                        if (capW1) {
+                            heat_output = capW1
+                        }
+                    }
+                    break
+                case "Heat Pump with Backup Furnace":
+                    if (atomicState.backup_heat) {
+                        if (atomicState.second_stage) {
+                            flow = cfmW2 - atomicState.off_capacity
+                            if (capW2) {
+                                heat_output = capW2
+                            }
+                        } else {
+                            flow = cfmW1 - atomicState.off_capacity
+                            if (capW1) {
+                                heat_output = capW1
+                            }
+                        }
+                        break
+                    }
+                case "Heat Pump only":
+                case "Heat Pump with Electric Backup":
+                    if (atomicState.second_stage) {
+                        flow = cfmY2 - atomicState.off_capacity
+                        if (capY2) {
+                            heat_output = capY2
+                        }
+                    } else {
+                        flow = cfmY1 - atomicState.off_capacity
+                        if (capY1) {
+                            heat_output = capY1
+                        }
+                    }
+                    break
             }
             if (flow > atomicState.heat_demand) {
                 accept_flow = flow - atomicState.heat_demand
@@ -2157,15 +2652,23 @@ def update_zones() {
             }
         }
     }
+    // log.debug("total_flow = $total_flow")
     zones.each { z1 ->
         // log.debug("checking zone $z1.label")
         if (atomicState.main_zones.findAll { it == z1.label }) {
-            log.debug("updating output for zone $z1.label")
+            // log.debug("updating output for zone $z1.label")
             zone_status_device = z1.get_status_device()
             zone_flow = zone_status_device.currentValue("flow") + zone_status_device.currentValue("off_capacity")
-            zone_status_device.set_heat_output(heat_output * zone_flow / total_flow)
-            zone_status_device.set_cool_output(cool_output * zone_flow / total_flow)
-            zone_status_device.set_vent_output(vent_output * zone_flow / total_flow)
+            if (total_flow) {
+                zone_status_device.set_heat_output(heat_output * zone_flow / total_flow)
+                zone_status_device.set_cool_output(cool_output * zone_flow / total_flow)
+                zone_status_device.set_vent_output(vent_output * zone_flow / total_flow)
+            } else {
+                // log.debug("zone_flow = $zone_flow")
+                zone_status_device.set_heat_output(0)
+                zone_status_device.set_cool_output(0)
+                zone_status_device.set_vent_output(0)
+            }
         }
     }
 }
